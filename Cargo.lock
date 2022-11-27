@@ -3018,6 +3018,7 @@ dependencies = [
  "pallet-im-online",
  "pallet-indices",
  "pallet-lottery",
+ "pallet-mail",
  "pallet-membership",
  "pallet-mmr",
  "pallet-multisig",
@@ -4944,6 +4945,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "pallet-mail"
+version = "4.0.0-dev"
+dependencies = [
+ "frame-benchmarking",
+ "frame-support",
+ "frame-system",
+ "log",
+ "parity-scale-codec",
+ "scale-info",
+ "sp-core",
+ "sp-io",
+ "sp-runtime",
+ "sp-std",
+]
+
+[[package]]
 name = "pallet-membership"
 version = "4.0.0-dev"
 source = "git+https://github.com/paritytech/substrate?branch=polkadot-v0.9.31#7a4e5163091384c4c10b6d76f5cb80dac0834f38"
@@ -5340,20 +5357,6 @@ dependencies = [
  "sp-io",
  "sp-runtime",
  "sp-std",
-]
-
-[[package]]
-name = "pallet-template"
-version = "4.0.0-dev"
-dependencies = [
- "frame-benchmarking",
- "frame-support",
- "frame-system",
- "parity-scale-codec",
- "scale-info",
- "sp-core",
- "sp-io",
- "sp-runtime",
 ]
 
 [[package]]
