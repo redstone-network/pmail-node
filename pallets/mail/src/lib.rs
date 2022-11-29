@@ -28,10 +28,11 @@ pub struct Mail {
 
 #[derive(Encode, Decode, Eq, PartialEq, Clone, RuntimeDebug, TypeInfo, MaxEncodedLen)]
 pub enum MailAddress {
-	SubAddr(BoundedVec<u8, ConstU32<32>>), // substrate address, start with 5...
-	ETHAddr(BoundedVec<u8, ConstU32<32>>), // ethereum address, start with 0...
-	MoonbeamAddr(BoundedVec<u8, ConstU32<32>>), // moonbeam address, start with 0...
-	NormalAddr(BoundedVec<u8, ConstU32<32>>), // normal address, such as gmail, outlook.com...                                     //1@q.cn
+	SubAddr(BoundedVec<u8, ConstU32<128>>), // substrate address, start with 5...
+	ETHAddr(BoundedVec<u8, ConstU32<128>>), // ethereum address, start with 0...
+	MoonbeamAddr(BoundedVec<u8, ConstU32<128>>), // moonbeam address, start with 0...
+	NormalAddr(BoundedVec<u8, ConstU32<128>>), /* normal address, such as gmail, outlook.com...
+	                                         * //1@q.cn */
 }
 
 #[frame_support::pallet]
@@ -52,7 +53,8 @@ pub mod pallet {
 		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 	}
 
-	///  bind user's redstone network address to other mail address (such ethereum address, moonbeam address, web2 address ...)
+	///  bind user's redstone network address to other mail address (such ethereum address, moonbeam
+	/// address, web2 address ...)
 	#[pallet::storage]
 	#[pallet::getter(fn contact_list)]
 	pub type ContactList<T: Config> = StorageDoubleMap<
@@ -61,7 +63,7 @@ pub mod pallet {
 		T::AccountId,
 		Twox64Concat,
 		MailAddress,
-		BoundedVec<u8, ConstU32<256>>,
+		BoundedVec<u8, ConstU32<128>>,
 		OptionQuery,
 	>;
 
@@ -80,7 +82,7 @@ pub mod pallet {
 
 	#[pallet::storage]
 	#[pallet::getter(fn map_triger)]
-	pub(super) type MapMail<T: Config> =
+	pub(super) type MailMap<T: Config> =
 		StorageMap<_, Twox64Concat, T::AccountId, BoundedVec<u8, ConstU32<128>>>;
 
 	#[pallet::event]
@@ -88,9 +90,11 @@ pub mod pallet {
 	pub enum Event<T: Config> {
 		/// Event documentation should end with an array that provides descriptive names for event
 		/// parameters. [something, who]
-		AddressBound(T::AccountId, MailAddress),
+		AddressBound(T::AccountId, BoundedVec<u8, ConstU32<128>>),
 
-		SendMailSuccess(T::AccountId, MailAddress),
+		SendMailSuccess(T::AccountId, Mail),
+		UpdateAliasSuccess(T::AccountId, BoundedVec<u8, ConstU32<128>>),
+		SetAliasSuccess(T::AccountId, BoundedVec<u8, ConstU32<128>>),
 	}
 
 	// Errors inform users that something went wrong.
@@ -99,7 +103,7 @@ pub mod pallet {
 		/// Error names should be descriptive.
 		AddressBindDuplicate,
 		/// Errors should have helpful documentation associated with them.
-		StorageOverflow,
+		MailSendDuplicate,
 	}
 
 	// Dispatchable functions allows users to interact with the pallet and invoke state changes.
@@ -113,13 +117,17 @@ pub mod pallet {
 		#[pallet::weight(10_000)]
 		pub fn bind_address(
 			origin: OriginFor<T>,
-			mail_address: BoundedVec<u8, ConstU32<128>>,
+			pmail_address: BoundedVec<u8, ConstU32<128>>,
 		) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 
-			// 校验是不是以pmail.io结尾
+			ensure!(!MailMap::<T>::contains_key(&who), Error::<T>::AddressBindDuplicate);
 
-			log::info!("-------get bind mail address: {:?}", mail_address);
+			MailMap::<T>::insert(&who, pmail_address.clone());
+
+			Self::deposit_event(Event::AddressBound(who.clone(), pmail_address.clone()));
+
+			log::info!("-------bind address to pmail success: {:?}", pmail_address.clone());
 
 			Ok(())
 		}
@@ -132,25 +140,44 @@ pub mod pallet {
 		) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 
-			log::info!("-------get bind address: {:?}", address);
-			log::info!("-------get bind alias: {:?}", alias);
+			match ContactList::<T>::get(&who, address.clone()) {
+				Some(_) => {
+					ContactList::<T>::mutate(&who, address.clone(), |v| *v = Some(alias.clone()));
+					Self::deposit_event(Event::UpdateAliasSuccess(who.clone(), alias.clone()));
+					log::info!("-------update alias success: {:?}", alias.clone());
+				},
+				None => {
+					ContactList::<T>::insert(&who, address.clone(), alias.clone());
+					Self::deposit_event(Event::SetAliasSuccess(who.clone(), alias.clone()));
+					log::info!("-------add alias success: {:?}", alias.clone());
+				},
+			}
 
 			Ok(())
 		}
 
-		//  传入时间戳和哈嘻对用户来说是否足够友好
+		/// send email
 		#[pallet::weight(10_000)]
 		pub fn send_mail(
 			origin: OriginFor<T>,
-			to:address: MailAddress,
+			to: MailAddress,
 			timestamp: u64,
 			store_hash: BoundedVec<u8, ConstU32<128>>,
 		) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 
+			ensure!(
+				!MailingList::<T>::contains_key((&who, to.clone(), timestamp)),
+				Error::<T>::MailSendDuplicate
+			);
+
+			MailingList::<T>::insert((&who, to.clone(), timestamp), store_hash.clone());
+
 			let mail = Mail { timestamp, store_hash };
 
-			log::info!("-------get bind alias: {:?}", mail);
+			log::info!("------- mail send success: {:?}", mail);
+
+			Self::deposit_event(Event::SendMailSuccess(who.clone(), mail));
 
 			Ok(())
 		}
