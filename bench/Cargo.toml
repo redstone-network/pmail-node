@@ -20,8 +20,8 @@ kitchensink-runtime = { version = "3.0.0-dev", path = "../runtime" }
 sc-client-api = { version = "4.0.0-dev", git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.31" }
 sp-runtime = { version = "6.0.0", git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.31" }
 sp-state-machine = { version = "0.12.0", git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.31" }
-serde = "1.0.136"
-serde_json = "1.0.85"
+serde = "1.0.150"
+serde_json = "1.0.89"
 derive_more = { version = "0.99.17", default-features = false, features = ["display"] }
 kvdb = "0.12.0"
 kvdb-rocksdb = "0.16.0"

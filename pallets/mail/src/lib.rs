@@ -15,10 +15,68 @@ mod tests;
 mod benchmarking;
 
 use codec::{Decode, Encode, MaxEncodedLen};
-use frame_support::{traits::ConstU32, BoundedVec};
+use frame_support::{
+	traits::{ConstU32, EstimateNextSessionRotation, Randomness},
+	BoundedVec, PalletId, WeakBoundedVec,
+};
+use frame_system::offchain::{
+	AppCrypto, CreateSignedTransaction, SignedPayload, Signer, SigningTypes,
+};
 use scale_info::TypeInfo;
-use sp_runtime::RuntimeDebug;
+use sp_core::crypto::KeyTypeId;
+use sp_runtime::{
+	app_crypto::RuntimeAppPublic,
+	offchain::{
+		http,
+		storage::{StorageRetrievalError, StorageValueRef},
+		Duration,
+	},
+	RuntimeDebug,
+};
 use sp_std::cmp::{Eq, PartialEq};
+
+pub const MAIL_SUFFIX: &str = "@pmailbox.org";
+pub const KEY_TYPE: KeyTypeId = KeyTypeId(*b"mail");
+pub mod crypto {
+	use super::KEY_TYPE;
+	use sp_core::sr25519::Signature as Sr25519Signature;
+	use sp_runtime::{
+		app_crypto::{app_crypto, sr25519},
+		traits::Verify,
+		MultiSignature, MultiSigner,
+	};
+	app_crypto!(sr25519, KEY_TYPE);
+
+	pub struct TestAuthId;
+	// implemented for ocw-runtime
+	impl frame_system::offchain::AppCrypto<MultiSigner, MultiSignature> for TestAuthId {
+		type RuntimeAppPublic = Public;
+		type GenericSignature = sp_core::sr25519::Signature;
+		type GenericPublic = sp_core::sr25519::Public;
+	}
+
+	// implemented for mock runtime in test
+	impl frame_system::offchain::AppCrypto<<Sr25519Signature as Verify>::Signer, Sr25519Signature>
+		for TestAuthId
+	{
+		type RuntimeAppPublic = Public;
+		type GenericSignature = sp_core::sr25519::Signature;
+		type GenericPublic = sp_core::sr25519::Public;
+	}
+}
+
+enum OffchainErr {
+	Working,
+}
+
+impl sp_std::fmt::Debug for OffchainErr {
+	fn fmt(&self, fmt: &mut sp_std::fmt::Formatter) -> sp_std::fmt::Result {
+		match *self {
+			OffchainErr::Working =>
+				write!(fmt, "The offline working machine is currently executing work"),
+		}
+	}
+}
 
 #[derive(Encode, Decode, Eq, PartialEq, Clone, RuntimeDebug, TypeInfo, MaxEncodedLen)]
 pub struct Mail {
@@ -40,7 +98,74 @@ pub mod pallet {
 	use super::*;
 
 	use frame_support::pallet_prelude::*;
-	use frame_system::pallet_prelude::*;
+	use frame_system::{offchain::SendUnsignedTransaction, pallet_prelude::*};
+	use serde::{Deserialize, Deserializer};
+	use sp_runtime::{Permill, SaturatedConversion};
+	use sp_std::{borrow::ToOwned, vec::Vec};
+
+	pub const LIMIT: u64 = u64::MAX;
+
+	/*
+	{
+	"code": 0,
+	"data": [
+	  {
+			"subject": "test",
+			"body": "<meta http-equiv=\"Content-Type\" content=\"text/html; charset=GB18030\"><div>hello, boy. how are you.</div><div><br></div><div><div style=\"color:#909090;font-family:Arial Narrow;font-size:12px\">------------------</div><div style=\"font-size:14px;font-family:Verdana;color:#000;\"><a class=\"xm_write_card\" id=\"in_alias\" style=\"white-space: normal; display: inline-block; text-decoration: none !important;font-family: -apple-system,BlinkMacSystemFont,PingFang SC,Microsoft YaHei;\" href=\"https://wx.mail.qq.com/home/index?t=readmail_businesscard_midpage&amp;nocheck=true&amp;name=%E5%B0%8F%E7%99%BD%E9%BE%99&amp;icon=http%3A%2F%2Fthirdqq.qlogo.cn%2Fg%3Fb%3Dsdk%26k%3Diby9h7f0AjE5pUic9pIt3ynw%26s%3D100%26t%3D1556660321%3Frand%3D1650372662&amp;mail=116174160%40qq.com&amp;code=\" target=\"_blank\"><table style=\"white-space: normal;table-layout: fixed; padding-right: 20px;\" contenteditable=\"false\" cellpadding=\"0\" cellspacing=\"0\"><tbody><tr valign=\"top\"><td style=\"width: 40px;min-width: 40px; padding-top:10px\"><div style=\"width: 38px; height: 38px; border: 1px #FFF solid; border-radius:50%; margin: 0;vertical-align: top;box-shadow: 0 0 10px 0 rgba(127,152,178,0.14);\"><img src=\"http://thirdqq.qlogo.cn/g?b=sdk&amp;k=iby9h7f0AjE5pUic9pIt3ynw&amp;s=100&amp;t=1556660321?rand=1650372662\" style=\"width:100%;height:100%;border-radius:50%;pointer-events: none;\"></div></td><td style=\"padding: 10px 0 8px 10px;\"><div class=\"businessCard_name\" style=\"font-size: 14px;color: #33312E;line-height: 20px; padding-bottom: 2px; margin:0;font-weight: 500;\">小白龙</div><div class=\"businessCard_mail\" style=\"font-size: 12px;color: #999896;line-height: 18px; margin:0;\">116174160@qq.com</div></td></tr></tbody></table></a></div></div><div>&nbsp;</div>",
+			"from": [{
+				"Name": "=?gb18030?B?0KGw18H6?=",
+				"Address": "116174160@qq.com"
+			}],
+			"to": [{
+				"Name": "=?gb18030?B?dGVzdDE=?=",
+				"Address": "test1@pmailbox.org"
+			}],
+			"data": "2022-12-04T17:52:21+08:00"
+		}
+		]
+	}
+	*/
+
+	#[derive(Deserialize, Encode, Decode, Default, RuntimeDebug)]
+	struct AddressInfo {
+		#[serde(deserialize_with = "de_string_to_bytes")]
+		name: Vec<u8>,
+		#[serde(deserialize_with = "de_string_to_bytes")]
+		address: Vec<u8>,
+	}
+
+	#[derive(Deserialize, Encode, Decode, Default, RuntimeDebug)]
+	struct MailInfo {
+		#[serde(deserialize_with = "de_string_to_bytes")]
+		subject: Vec<u8>,
+		#[serde(deserialize_with = "de_string_to_bytes")]
+		body: Vec<u8>,
+
+		from: Vec<AddressInfo>,
+		to: Vec<AddressInfo>,
+
+		#[serde(deserialize_with = "de_string_to_bytes")]
+		data: Vec<u8>,
+
+		timestampe: u64,
+	}
+
+	#[derive(Deserialize, Encode, Decode, Default, RuntimeDebug)]
+	struct MailListResponse {
+		#[serde(deserialize_with = "de_string_to_bytes")]
+		data: Vec<u8>,
+		code: u64,
+		#[serde(deserialize_with = "de_string_to_bytes")]
+		msg: Vec<u8>,
+	}
+
+	pub fn de_string_to_bytes<'de, D>(de: D) -> Result<Vec<u8>, D::Error>
+	where
+		D: Deserializer<'de>,
+	{
+		let s: &str = Deserialize::deserialize(de)?;
+		Ok(s.as_bytes().to_vec())
+	}
 
 	#[pallet::pallet]
 	#[pallet::generate_store(pub(super) trait Store)]
@@ -81,7 +206,7 @@ pub mod pallet {
 	>;
 
 	#[pallet::storage]
-	#[pallet::getter(fn map_triger)]
+	#[pallet::getter(fn map_mail)]
 	pub(super) type MailMap<T: Config> =
 		StorageMap<_, Twox64Concat, T::AccountId, BoundedVec<u8, ConstU32<128>>>;
 
@@ -188,8 +313,61 @@ pub mod pallet {
 	/// all notification will be send via offchain_worker, it is more efficient
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
-		fn offchain_worker(block_number: T::BlockNumber) {
-			log::info!("Hello world from mail-pallet workers!: {:?}", block_number);
+		fn offchain_worker(now: T::BlockNumber) {
+			log::info!("Hello world from mail-pallet workers!: {:?}", now);
+			if sp_io::offchain::is_validator() {
+				Self::offchain_work_start(now);
+			}
 		}
+	}
+
+	impl<T: Config> Pallet<T> {
+		fn offchain_work_start(now: T::BlockNumber) -> Result<(), OffchainErr> {
+			for (account_id, username) in MailMap::<T>::iter() {}
+
+			Ok(())
+		}
+	}
+
+	fn get_email_from_web2(username: &str) -> Result<u64, http::Error> {
+		let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(10_000));
+
+		let url =
+			"http://127.0.0.1:8888/api/mails/list?emailname=".to_owned() + username + MAIL_SUFFIX;
+
+		// let url = "http://mail1.pmailbox.org:8888/api/mails/list?emailname=".to_owned() +
+		// 	username + MAIL_SUFFIX;
+
+		let request = http::Request::get(&url).add_header("content-type", "application/json");
+
+		let pending = request.deadline(deadline).send().map_err(|e| {
+			log::info!("####post pending error: {:?}", e);
+			http::Error::IoError
+		})?;
+
+		let response = pending.try_wait(deadline).map_err(|e| {
+			log::info!("####post response error: {:?}", e);
+			http::Error::DeadlineReached
+		})??;
+
+		if response.code != 200 {
+			log::info!("Unexpected status code: {}", response.code);
+			return Err(http::Error::Unknown)
+		}
+
+		let body = response.body().collect::<Vec<u8>>();
+
+		// Create a str slice from the body.
+		let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
+			log::info!("No UTF8 body");
+			http::Error::Unknown
+		})?;
+
+		if "ok" != body_str {
+			log::info!("publish task fail: {}", body_str);
+			return Err(http::Error::Unknown)
+		}
+
+		Ok(0)
 	}
 }
