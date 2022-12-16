@@ -15,55 +15,21 @@ mod tests;
 mod benchmarking;
 
 use codec::{Decode, Encode, MaxEncodedLen};
-use frame_support::{
-	traits::{ConstU32, EstimateNextSessionRotation, Randomness},
-	BoundedVec, PalletId, WeakBoundedVec,
-};
+use frame_support::{traits::ConstU32, BoundedVec};
 use frame_system::offchain::{
 	AppCrypto, CreateSignedTransaction, SignedPayload, Signer, SigningTypes,
 };
 use scale_info::TypeInfo;
+use serde::{Deserialize, Deserializer, Serialize};
 use sp_core::crypto::KeyTypeId;
 use sp_runtime::{
-	app_crypto::RuntimeAppPublic,
-	offchain::{
-		http,
-		storage::{StorageRetrievalError, StorageValueRef},
-		Duration,
-	},
+	offchain::{http, Duration},
 	RuntimeDebug,
 };
 use sp_std::cmp::{Eq, PartialEq};
 
 pub const MAIL_SUFFIX: &str = "@pmailbox.org";
 pub const KEY_TYPE: KeyTypeId = KeyTypeId(*b"mail");
-pub mod crypto {
-	use super::KEY_TYPE;
-	use sp_core::sr25519::Signature as Sr25519Signature;
-	use sp_runtime::{
-		app_crypto::{app_crypto, sr25519},
-		traits::Verify,
-		MultiSignature, MultiSigner,
-	};
-	app_crypto!(sr25519, KEY_TYPE);
-
-	pub struct TestAuthId;
-	// implemented for ocw-runtime
-	impl frame_system::offchain::AppCrypto<MultiSigner, MultiSignature> for TestAuthId {
-		type RuntimeAppPublic = Public;
-		type GenericSignature = sp_core::sr25519::Signature;
-		type GenericPublic = sp_core::sr25519::Public;
-	}
-
-	// implemented for mock runtime in test
-	impl frame_system::offchain::AppCrypto<<Sr25519Signature as Verify>::Signer, Sr25519Signature>
-		for TestAuthId
-	{
-		type RuntimeAppPublic = Public;
-		type GenericSignature = sp_core::sr25519::Signature;
-		type GenericPublic = sp_core::sr25519::Public;
-	}
-}
 
 enum OffchainErr {
 	Working,
@@ -99,11 +65,40 @@ pub mod pallet {
 
 	use frame_support::pallet_prelude::*;
 	use frame_system::{offchain::SendUnsignedTransaction, pallet_prelude::*};
-	use serde::{Deserialize, Deserializer};
-	use sp_runtime::{Permill, SaturatedConversion};
 	use sp_std::{borrow::ToOwned, vec::Vec};
 
 	pub const LIMIT: u64 = u64::MAX;
+
+	pub mod crypto {
+		use super::KEY_TYPE;
+		use sp_core::sr25519::Signature as Sr25519Signature;
+		use sp_runtime::{
+			app_crypto::{app_crypto, sr25519},
+			traits::Verify,
+			MultiSignature, MultiSigner,
+		};
+		app_crypto!(sr25519, KEY_TYPE);
+
+		pub struct TestAuthId;
+		// implemented for ocw-runtime
+		impl frame_system::offchain::AppCrypto<MultiSigner, MultiSignature> for TestAuthId {
+			type RuntimeAppPublic = Public;
+			type GenericSignature = sp_core::sr25519::Signature;
+			type GenericPublic = sp_core::sr25519::Public;
+		}
+
+		// implemented for mock runtime in test
+		impl
+			frame_system::offchain::AppCrypto<
+				<Sr25519Signature as Verify>::Signer,
+				Sr25519Signature,
+			> for TestAuthId
+		{
+			type RuntimeAppPublic = Public;
+			type GenericSignature = sp_core::sr25519::Signature;
+			type GenericPublic = sp_core::sr25519::Public;
+		}
+	}
 
 	/*
 	{
@@ -173,9 +168,12 @@ pub mod pallet {
 
 	/// Configure the pallet by specifying the parameters and types on which it depends.
 	#[pallet::config]
-	pub trait Config: frame_system::Config {
+	pub trait Config: frame_system::Config + CreateSignedTransaction<Call<Self>> {
 		/// Because this pallet emits events, it depends on the runtime's definition of an event.
 		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
+
+		/// The identifier type for an offchain worker.
+		type AuthorityId: AppCrypto<Self::Public, Self::Signature>;
 	}
 
 	///  bind user's redstone network address to other mail address (such ethereum address, moonbeam
@@ -210,6 +208,23 @@ pub mod pallet {
 	pub(super) type MailMap<T: Config> =
 		StorageMap<_, Twox64Concat, T::AccountId, BoundedVec<u8, ConstU32<128>>>;
 
+	/// Payload used by update recipe times to submit a transaction.
+	#[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, scale_info::TypeInfo)]
+	pub struct MailPayload<Public, BlockNumber> {
+		pub block_number: BlockNumber,
+		pub from: MailAddress,
+		pub to: MailAddress,
+		pub timestamp: u64,
+		pub store_hash: BoundedVec<u8, ConstU32<128>>,
+		pub public: Public,
+	}
+
+	impl<T: SigningTypes> SignedPayload<T> for MailPayload<T::Public, T::BlockNumber> {
+		fn public(&self) -> T::Public {
+			self.public.clone()
+		}
+	}
+
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
@@ -229,6 +244,12 @@ pub mod pallet {
 		AddressBindDuplicate,
 		/// Errors should have helpful documentation associated with them.
 		MailSendDuplicate,
+
+		HttpFetchingError,
+		DeadlineReached,
+		StatueCodeError,
+		FormatError,
+		DeserializeToObjError,
 	}
 
 	// Dispatchable functions allows users to interact with the pallet and invoke state changes.
@@ -307,7 +328,19 @@ pub mod pallet {
 			Ok(())
 		}
 
-		// #[pallet::weight(0)]
+		#[pallet::weight(0)]
+		pub fn submit_add_mail_with_signed_payload(
+			origin: OriginFor<T>,
+			mail_payload: MailPayload<T::Public, T::BlockNumber>,
+			_signature: T::Signature,
+		) -> DispatchResult {
+			// This ensures that the function can only be called via unsigned transaction.
+			ensure_none(origin)?;
+
+			log::info!("###### in submit_add_mail_with_signed_payload.");
+
+			Ok(())
+		}
 	}
 
 	/// all notification will be send via offchain_worker, it is more efficient
@@ -323,51 +356,106 @@ pub mod pallet {
 
 	impl<T: Config> Pallet<T> {
 		fn offchain_work_start(now: T::BlockNumber) -> Result<(), OffchainErr> {
-			for (account_id, username) in MailMap::<T>::iter() {}
+			for (account_id, username) in MailMap::<T>::iter() {
+				let username =
+					match scale_info::prelude::string::String::from_utf8(username.to_vec()) {
+						Ok(v) => v,
+						Err(e) => {
+							log::info!("###### decode username error  {:?}", e);
+							continue
+						},
+					};
+
+				Self::get_email_from_web2(&username);
+			}
+
+			for (key, hash) in MailingList::<T>::iter() {}
 
 			Ok(())
 		}
-	}
 
-	fn get_email_from_web2(username: &str) -> Result<u64, http::Error> {
-		let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(10_000));
+		fn get_email_from_web2(username: &str) -> Result<MailListResponse, Error<T>> {
+			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(10_000));
 
-		let url =
-			"http://127.0.0.1:8888/api/mails/list?emailname=".to_owned() + username + MAIL_SUFFIX;
+			let url = "http://127.0.0.1:8888/api/mails/list?emailname=".to_owned() +
+				username + MAIL_SUFFIX;
+			// let url = "http://mail1.pmailbox.org:8888/api/mails/list?emailname=".to_owned() +
+			// 	username + MAIL_SUFFIX;
 
-		// let url = "http://mail1.pmailbox.org:8888/api/mails/list?emailname=".to_owned() +
-		// 	username + MAIL_SUFFIX;
+			let request = http::Request::get(&url).add_header("content-type", "application/json");
 
-		let request = http::Request::get(&url).add_header("content-type", "application/json");
+			let pending = request.deadline(deadline).send().map_err(|e| {
+				log::info!("####post pending error: {:?}", e);
+				<Error<T>>::HttpFetchingError
+			})?;
 
-		let pending = request.deadline(deadline).send().map_err(|e| {
-			log::info!("####post pending error: {:?}", e);
-			http::Error::IoError
-		})?;
+			let response = pending
+				.try_wait(deadline)
+				.map_err(|e| {
+					log::info!("####post response error 1: {:?}", e);
+					<Error<T>>::DeadlineReached
+				})?
+				.map_err(|e| {
+					log::info!("####post response error 2: {:?}", e);
+					<Error<T>>::DeadlineReached
+				})?;
 
-		let response = pending.try_wait(deadline).map_err(|e| {
-			log::info!("####post response error: {:?}", e);
-			http::Error::DeadlineReached
-		})??;
+			if response.code != 200 {
+				log::info!("Unexpected status code: {}", response.code);
+				return Err(<Error<T>>::StatueCodeError)
+			}
 
-		if response.code != 200 {
-			log::info!("Unexpected status code: {}", response.code);
-			return Err(http::Error::Unknown)
+			let body = response.body().collect::<Vec<u8>>();
+
+			// Create a str slice from the body.
+			let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
+				log::info!("No UTF8 body");
+				<Error<T>>::FormatError
+			})?;
+
+			let mail_list_response: MailListResponse =
+				serde_json::from_str(&body_str).map_err(|_| <Error<T>>::DeserializeToObjError)?;
+
+			Ok(mail_list_response)
 		}
 
-		let body = response.body().collect::<Vec<u8>>();
+		fn add_mail(
+			block_number: T::BlockNumber,
+			from: MailAddress,
+			to: MailAddress,
+			timestamp: u64,
+			store_hash: BoundedVec<u8, ConstU32<128>>,
+		) -> Result<u64, Error<T>> {
+			if let Some((_, res)) = Signer::<T, T::AuthorityId>::any_account()
+				.send_unsigned_transaction(
+					// this line is to prepare and return payload
+					|account| MailPayload {
+						block_number,
+						from: from.clone(),
+						to: to.clone(),
+						timestamp,
+						store_hash: store_hash.clone(),
+						public: account.public.clone(),
+					},
+					|payload, signature| Call::submit_add_mail_with_signed_payload {
+						mail_payload: payload,
+						signature,
+					},
+				) {
+				match res {
+					Ok(()) => {
+						log::info!("#####unsigned tx with signed payload successfully sent.");
+					},
+					Err(()) => {
+						log::error!("#####sending unsigned tx with signed payload failed.");
+					},
+				};
+			} else {
+				// The case of `None`: no account is available for sending
+				log::error!("#####No local account available");
+			}
 
-		// Create a str slice from the body.
-		let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
-			log::info!("No UTF8 body");
-			http::Error::Unknown
-		})?;
-
-		if "ok" != body_str {
-			log::info!("publish task fail: {}", body_str);
-			return Err(http::Error::Unknown)
+			Ok(0)
 		}
-
-		Ok(0)
 	}
 }
