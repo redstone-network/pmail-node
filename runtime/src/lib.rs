@@ -1606,10 +1606,16 @@ impl pallet_alliance::Config for Runtime {
 	type WeightInfo = pallet_alliance::weights::SubstrateWeight<Runtime>;
 	type RetirementPeriod = RetirementPeriod;
 }
+
+parameter_types! {
+	pub const UnsignedPriority: BlockNumber = 1;
+}
+
 impl pallet_mail::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 
 	type AuthorityId = pallet_mail::crypto::TestAuthId;
+	type UnsignedPriority = UnsignedPriority;
 }
 
 construct_runtime!(

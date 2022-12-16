@@ -71,12 +71,15 @@ pub mod pallet {
 
 	pub mod crypto {
 		use super::KEY_TYPE;
+		use codec::alloc::string::String;
+		use scale_info::prelude::format;
 		use sp_core::sr25519::Signature as Sr25519Signature;
 		use sp_runtime::{
 			app_crypto::{app_crypto, sr25519},
 			traits::Verify,
 			MultiSignature, MultiSigner,
 		};
+
 		app_crypto!(sr25519, KEY_TYPE);
 
 		pub struct TestAuthId;
@@ -123,9 +126,9 @@ pub mod pallet {
 
 	#[derive(Deserialize, Encode, Decode, Default, RuntimeDebug)]
 	struct AddressInfo {
-		#[serde(deserialize_with = "de_string_to_bytes")]
+		#[serde(deserialize_with = "de_string_to_bytes", alias = "name", alias = "Name")]
 		name: Vec<u8>,
-		#[serde(deserialize_with = "de_string_to_bytes")]
+		#[serde(deserialize_with = "de_string_to_bytes", alias = "address", alias = "Address")]
 		address: Vec<u8>,
 	}
 
@@ -140,7 +143,7 @@ pub mod pallet {
 		to: Vec<AddressInfo>,
 
 		#[serde(deserialize_with = "de_string_to_bytes")]
-		data: Vec<u8>,
+		date: Vec<u8>,
 
 		timestampe: u64,
 	}
@@ -174,6 +177,13 @@ pub mod pallet {
 
 		/// The identifier type for an offchain worker.
 		type AuthorityId: AppCrypto<Self::Public, Self::Signature>;
+
+		/// A configuration for base priority of unsigned transactions.
+		///
+		/// This is exposed so that it can be tuned for particular runtime, when
+		/// multiple pallets send unsigned transactions.
+		#[pallet::constant]
+		type UnsignedPriority: Get<TransactionPriority>;
 	}
 
 	///  bind user's redstone network address to other mail address (such ethereum address, moonbeam
@@ -196,7 +206,7 @@ pub mod pallet {
 	pub type MailingList<T: Config> = StorageNMap<
 		_,
 		(
-			storage::Key<Twox64Concat, T::AccountId>,
+			storage::Key<Blake2_128Concat, MailAddress>,
 			storage::Key<Blake2_128Concat, MailAddress>,
 			storage::Key<Blake2_128Concat, u64>,
 		),
@@ -207,6 +217,11 @@ pub mod pallet {
 	#[pallet::getter(fn map_mail)]
 	pub(super) type MailMap<T: Config> =
 		StorageMap<_, Twox64Concat, T::AccountId, BoundedVec<u8, ConstU32<128>>>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn map_owner)]
+	pub(super) type OwnerMap<T: Config> =
+		StorageMap<_, Twox64Concat, BoundedVec<u8, ConstU32<128>>, T::AccountId>;
 
 	/// Payload used by update recipe times to submit a transaction.
 	#[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, scale_info::TypeInfo)]
@@ -232,7 +247,7 @@ pub mod pallet {
 		/// parameters. [something, who]
 		AddressBound(T::AccountId, BoundedVec<u8, ConstU32<128>>),
 
-		SendMailSuccess(T::AccountId, Mail),
+		SendMailSuccess(MailAddress, Mail),
 		UpdateAliasSuccess(T::AccountId, BoundedVec<u8, ConstU32<128>>),
 		SetAliasSuccess(T::AccountId, BoundedVec<u8, ConstU32<128>>),
 	}
@@ -244,6 +259,7 @@ pub mod pallet {
 		AddressBindDuplicate,
 		/// Errors should have helpful documentation associated with them.
 		MailSendDuplicate,
+		AddressMustBeExist,
 
 		HttpFetchingError,
 		DeadlineReached,
@@ -268,8 +284,13 @@ pub mod pallet {
 			let who = ensure_signed(origin)?;
 
 			ensure!(!MailMap::<T>::contains_key(&who), Error::<T>::AddressBindDuplicate);
+			ensure!(
+				!OwnerMap::<T>::contains_key(pmail_address.clone()),
+				Error::<T>::AddressBindDuplicate
+			);
 
 			MailMap::<T>::insert(&who, pmail_address.clone());
+			OwnerMap::<T>::insert(pmail_address.clone(), &who);
 
 			Self::deposit_event(Event::AddressBound(who.clone(), pmail_address.clone()));
 
@@ -312,18 +333,21 @@ pub mod pallet {
 		) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 
+			ensure!(MailMap::<T>::contains_key(&who), Error::<T>::AddressMustBeExist);
+			let from = MailAddress::SubAddr(MailMap::<T>::get(&who).unwrap());
+
 			ensure!(
-				!MailingList::<T>::contains_key((&who, to.clone(), timestamp)),
+				!MailingList::<T>::contains_key((from.clone(), to.clone(), timestamp)),
 				Error::<T>::MailSendDuplicate
 			);
 
-			MailingList::<T>::insert((&who, to.clone(), timestamp), store_hash.clone());
+			MailingList::<T>::insert((from.clone(), to.clone(), timestamp), store_hash.clone());
 
 			let mail = Mail { timestamp, store_hash };
 
 			log::info!("------- mail send success: {:?}", mail);
 
-			Self::deposit_event(Event::SendMailSuccess(who.clone(), mail));
+			Self::deposit_event(Event::SendMailSuccess(from, mail));
 
 			Ok(())
 		}
@@ -336,6 +360,15 @@ pub mod pallet {
 		) -> DispatchResult {
 			// This ensures that the function can only be called via unsigned transaction.
 			ensure_none(origin)?;
+
+			MailingList::<T>::insert(
+				(mail_payload.from.clone(), mail_payload.to, mail_payload.timestamp),
+				mail_payload.store_hash.clone(),
+			);
+
+			let mail =
+				Mail { timestamp: mail_payload.timestamp, store_hash: mail_payload.store_hash };
+			Self::deposit_event(Event::SendMailSuccess(mail_payload.from, mail));
 
 			log::info!("###### in submit_add_mail_with_signed_payload.");
 
@@ -354,6 +387,46 @@ pub mod pallet {
 		}
 	}
 
+	/// configure unsigned tx, use it to update onchain status of notification, so that
+	/// notifications will not send repeatedly
+	#[pallet::validate_unsigned]
+	impl<T: Config> ValidateUnsigned for Pallet<T> {
+		type Call = Call<T>;
+
+		/// Validate unsigned call to this module.
+		///
+		/// By default unsigned transactions are disallowed, but implementing the validator
+		/// here we make sure that some particular calls (the ones produced by offchain worker)
+		/// are being whitelisted and marked as valid.
+		fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
+			// Firstly let's check that we call the right function.
+			let valid_tx = |provide| {
+				ValidTransaction::with_tag_prefix("ocw-mail")
+					.priority(T::UnsignedPriority::get())
+					.and_provides([&provide])
+					.longevity(3)
+					.propagate(true)
+					.build()
+			};
+
+			match call {
+				Call::submit_add_mail_with_signed_payload {
+					mail_payload: ref payload,
+					ref signature,
+				} => {
+					let signature_valid =
+						SignedPayload::<T>::verify::<T::AuthorityId>(payload, signature.clone());
+					if !signature_valid {
+						return InvalidTransaction::BadProof.into()
+					}
+
+					valid_tx(b"submit_add_mail_with_signed_payload".to_vec())
+				},
+				_ => InvalidTransaction::Call.into(),
+			}
+		}
+	}
+
 	impl<T: Config> Pallet<T> {
 		fn offchain_work_start(now: T::BlockNumber) -> Result<(), OffchainErr> {
 			for (account_id, username) in MailMap::<T>::iter() {
@@ -366,10 +439,27 @@ pub mod pallet {
 						},
 					};
 
-				Self::get_email_from_web2(&username);
-			}
+				let rt = Self::get_email_from_web2(&username);
 
-			for (key, hash) in MailingList::<T>::iter() {}
+				match rt {
+					Ok(mail_list_web2) => {
+						if 0 == mail_list_web2.code {
+							for item in mail_list_web2.data {
+		
+								// let from = MailAddress::NormalAddr();
+								// let to = MailAddress::NormalAddr();
+								// if (!MailingList::<T>::contains_key((from.clone(), to.clone(),
+								// timestamp)) { 	add_mail(now, );
+								// }
+							}
+						}
+					},
+					Err(e) => {
+
+					}
+				}
+				
+			}
 
 			Ok(())
 		}
@@ -418,6 +508,10 @@ pub mod pallet {
 
 			Ok(mail_list_response)
 		}
+
+		// fn upload_mail_json(mailInfl: MailInfo) -> Result<&str, Error<T>> {}
+
+		// fn send_mail_to_web2() {}
 
 		fn add_mail(
 			block_number: T::BlockNumber,

@@ -34,7 +34,7 @@ use sc_network_common::{protocol::event::Event, service::NetworkEventStream};
 use sc_service::{config::Configuration, error::Error as ServiceError, RpcHandlers, TaskManager};
 use sc_telemetry::{Telemetry, TelemetryWorker};
 use sp_api::ProvideRuntimeApi;
-use sp_core::crypto::Pair;
+use sp_core::crypto::{KeyTypeId, Pair};
 use sp_runtime::{generic, traits::Block as BlockT, SaturatedConversion};
 use std::sync::Arc;
 
@@ -366,6 +366,15 @@ pub fn new_full_base(
 		})?;
 
 	if config.offchain_worker.enabled {
+		//todo (for debug)
+		let keystore = keystore_container.sync_keystore();
+		sp_keystore::SyncCryptoStore::sr25519_generate_new(
+			&*keystore,
+			KeyTypeId(*b"mail"),
+			Some("//Alice"),
+		)
+		.expect("Creating key with account Alice should succeed.");
+
 		sc_service::build_offchain_workers(
 			&config,
 			task_manager.spawn_handle(),
