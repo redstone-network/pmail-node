@@ -29,7 +29,7 @@ use sp_runtime::{
 		storage_lock::{BlockAndTime, StorageLock},
 		Duration,
 	},
-	traits::{BlockNumberProvider, One},
+	traits::BlockNumberProvider,
 	RuntimeDebug,
 };
 use sp_std::{
@@ -486,7 +486,7 @@ pub mod pallet {
 	impl<T: Config> Pallet<T> {
 		fn offchain_work_start(now: T::BlockNumber) -> Result<(), OffchainErr> {
 			//get mail for web2
-			for (account_id, username) in MailMap::<T>::iter() {
+			for (_account_id, username) in MailMap::<T>::iter() {
 				let strusername =
 					match scale_info::prelude::string::String::from_utf8(username.to_vec()) {
 						Ok(v) => v,
@@ -607,7 +607,9 @@ pub mod pallet {
 										Ok(_code) => {
 											map_mailhash.insert(v);
 										},
-										Err(e) => {},
+										Err(e) => {
+											log::info!("####send_mail_to_web2 error {:?}", e);
+										},
 									}
 								},
 							_ => {},
@@ -686,7 +688,9 @@ pub mod pallet {
 			// let url = "http://mail1.pmailbox.org:8888/api/mails/create";
 
 			let full_emal_address = username.to_owned() + MAIL_SUFFIX;
-			let to_list = Vec::<String>::new();
+			let mut to_list = Vec::<String>::new();
+			to_list.push(String::from(to));
+
 			let mailtype = "txt";
 
 			let create_mail_info = CreateMailInfo {
@@ -699,7 +703,7 @@ pub mod pallet {
 				mailtype: String::from(mailtype),
 				text: String::from(txt_body),
 				html: String::from(html_body),
-				store_hash: String::from(""),
+				store_hash: String::from(hash),
 			};
 
 			let buff = serde_json::to_string(&create_mail_info);
