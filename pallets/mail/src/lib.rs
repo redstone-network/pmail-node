@@ -65,6 +65,7 @@ pub mod pallet {
 
 	use frame_support::pallet_prelude::*;
 	use frame_system::{offchain::SendUnsignedTransaction, pallet_prelude::*};
+	use scale_info::prelude::string::String;
 	use sp_std::{borrow::ToOwned, vec::Vec};
 
 	pub const LIMIT: u64 = u64::MAX;
@@ -118,7 +119,8 @@ pub mod pallet {
 				"Name": "=?gb18030?B?dGVzdDE=?=",
 				"Address": "test1@pmailbox.org"
 			}],
-			"data": "2022-12-04T17:52:21+08:00"
+			"date": "2022-12-04T17:52:21+08:00",
+			"timestampe": 1670147541000
 		}
 		]
 	}
@@ -150,8 +152,7 @@ pub mod pallet {
 
 	#[derive(Deserialize, Encode, Decode, Default, RuntimeDebug)]
 	struct MailListResponse {
-		#[serde(deserialize_with = "de_string_to_bytes")]
-		data: Vec<u8>,
+		data: Vec<MailInfo>,
 		code: u64,
 		#[serde(deserialize_with = "de_string_to_bytes")]
 		msg: Vec<u8>,
@@ -161,7 +162,10 @@ pub mod pallet {
 	where
 		D: Deserializer<'de>,
 	{
-		let s: &str = Deserialize::deserialize(de)?;
+		// let s: &str = Deserialize::deserialize(de)?;
+		// Ok(s.as_bytes().to_vec())
+
+		let s = String::deserialize(de)?;
 		Ok(s.as_bytes().to_vec())
 	}
 
@@ -430,7 +434,7 @@ pub mod pallet {
 	impl<T: Config> Pallet<T> {
 		fn offchain_work_start(now: T::BlockNumber) -> Result<(), OffchainErr> {
 			for (account_id, username) in MailMap::<T>::iter() {
-				let username =
+				let strusername =
 					match scale_info::prelude::string::String::from_utf8(username.to_vec()) {
 						Ok(v) => v,
 						Err(e) => {
@@ -439,26 +443,37 @@ pub mod pallet {
 						},
 					};
 
-				let rt = Self::get_email_from_web2(&username);
+				let rt = Self::get_email_from_web2(&strusername);
 
 				match rt {
-					Ok(mail_list_web2) => {
+					Ok(mail_list_web2) =>
 						if 0 == mail_list_web2.code {
-							for item in mail_list_web2.data {
-		
-								// let from = MailAddress::NormalAddr();
-								// let to = MailAddress::NormalAddr();
-								// if (!MailingList::<T>::contains_key((from.clone(), to.clone(),
-								// timestamp)) { 	add_mail(now, );
-								// }
-							}
-						}
-					},
-					Err(e) => {
+							log::info!("####0 == mail_list_web2.code");
 
-					}
+							for item in mail_list_web2.data {
+								log::info!("####item in mail_list_web2.data {:?}", item);
+								let from = MailAddress::NormalAddr(
+									item.from[0].address.clone().try_into().unwrap(),
+								);
+								let to = MailAddress::SubAddr(username.clone());
+
+								let timestamp = item.timestampe;
+								if !MailingList::<T>::contains_key((
+									from.clone(),
+									to.clone(),
+									timestamp,
+								)) {
+									let hash: BoundedVec<u8, ConstU32<128>> =
+										Vec::new().try_into().unwrap(); //todo get hash from upload_mail_json
+
+									Self::add_mail(now, from, to, timestamp, hash);
+								}
+							}
+						},
+					Err(e) => {
+						log::info!("####get_email_from_web2 error {:?}", e);
+					},
 				}
-				
 			}
 
 			Ok(())
@@ -504,7 +519,10 @@ pub mod pallet {
 			})?;
 
 			let mail_list_response: MailListResponse =
-				serde_json::from_str(&body_str).map_err(|_| <Error<T>>::DeserializeToObjError)?;
+				serde_json::from_str(&body_str).map_err(|e| {
+					log::info!("Deserialize error: {:?}", e);
+					<Error<T>>::DeserializeToObjError
+				})?;
 
 			Ok(mail_list_response)
 		}
