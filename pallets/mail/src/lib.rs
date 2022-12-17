@@ -23,13 +23,27 @@ use scale_info::TypeInfo;
 use serde::{Deserialize, Deserializer, Serialize};
 use sp_core::crypto::KeyTypeId;
 use sp_runtime::{
-	offchain::{http, Duration},
+	offchain::{
+		http,
+		storage::StorageValueRef,
+		storage_lock::{BlockAndTime, StorageLock},
+		Duration,
+	},
+	traits::{BlockNumberProvider, One},
 	RuntimeDebug,
 };
-use sp_std::cmp::{Eq, PartialEq};
+use sp_std::{
+	cmp::{Eq, PartialEq},
+	collections::btree_set::BTreeSet,
+	prelude::*,
+	str,
+};
 
 pub const MAIL_SUFFIX: &str = "@pmailbox.org";
 pub const KEY_TYPE: KeyTypeId = KeyTypeId(*b"mail");
+const FETCH_TIMEOUT_PERIOD: u64 = 3000; // in milli-seconds
+const LOCK_TIMEOUT_EXPIRATION: u64 = FETCH_TIMEOUT_PERIOD + 1000; // in milli-seconds
+const LOCK_BLOCK_EXPIRATION: u32 = 3; // in block number
 
 enum OffchainErr {
 	Working,
@@ -153,6 +167,44 @@ pub mod pallet {
 	#[derive(Deserialize, Encode, Decode, Default, RuntimeDebug)]
 	struct MailListResponse {
 		data: Vec<MailInfo>,
+		code: u64,
+		#[serde(deserialize_with = "de_string_to_bytes")]
+		msg: Vec<u8>,
+	}
+
+	/*
+	{
+	"emailname": "test1@pmailbox.org",
+	"from": "test1@pmailbox.org",
+	"to": ["admin@pmailbox.org"],
+	"cc": [],
+	"bcc": [],
+	"subject": "this is a title4",
+	"mailtype": "text",
+	"text": "text body",
+	"html": ""
+	"store_hash": ""
+	}
+	*/
+
+	#[derive(Serialize, Deserialize, Default, RuntimeDebug)]
+	struct CreateMailInfo {
+		emailname: String,
+		from: String,
+		to: Vec<String>,
+		cc: Vec<String>,
+		bcc: Vec<String>,
+		subject: String,
+		mailtype: String,
+		text: String,
+		html: String,
+		store_hash: String,
+	}
+
+	#[derive(Deserialize, Default, RuntimeDebug)]
+	struct CreateMailResponse {
+		#[serde(deserialize_with = "de_string_to_bytes")]
+		data: Vec<u8>,
 		code: u64,
 		#[serde(deserialize_with = "de_string_to_bytes")]
 		msg: Vec<u8>,
@@ -433,6 +485,7 @@ pub mod pallet {
 
 	impl<T: Config> Pallet<T> {
 		fn offchain_work_start(now: T::BlockNumber) -> Result<(), OffchainErr> {
+			//get mail for web2
 			for (account_id, username) in MailMap::<T>::iter() {
 				let strusername =
 					match scale_info::prelude::string::String::from_utf8(username.to_vec()) {
@@ -451,7 +504,6 @@ pub mod pallet {
 							log::info!("####0 == mail_list_web2.code");
 
 							for item in mail_list_web2.data {
-								log::info!("####item in mail_list_web2.data {:?}", item);
 								let from = MailAddress::NormalAddr(
 									item.from[0].address.clone().try_into().unwrap(),
 								);
@@ -474,6 +526,96 @@ pub mod pallet {
 						log::info!("####get_email_from_web2 error {:?}", e);
 					},
 				}
+			}
+
+			//sen mail to web2
+			let store_map_mailhash = StorageValueRef::persistent(b"difttt_ocw::map_mailhash");
+			let mut map_mailhash: BTreeSet<BoundedVec<u8, ConstU32<128>>>;
+			if let Ok(Some(info)) =
+				store_map_mailhash.get::<BTreeSet<BoundedVec<u8, ConstU32<128>>>>()
+			{
+				map_mailhash = info;
+			} else {
+				map_mailhash = BTreeSet::new();
+			}
+			let mut lock = StorageLock::<BlockAndTime<Self>>::with_block_and_time_deadline(
+				b"offchain-demo::lock",
+				LOCK_BLOCK_EXPIRATION,
+				Duration::from_millis(LOCK_TIMEOUT_EXPIRATION),
+			);
+			if let Ok(_guard) = lock.try_lock() {
+				for (k, v) in MailingList::<T>::iter() {
+					let from = k.0;
+					let to = k.1;
+
+					match from {
+						MailAddress::SubAddr(from_username) => match to {
+							MailAddress::NormalAddr(to_address) =>
+								if !map_mailhash.contains(&v) {
+									let str_from_username =
+										match scale_info::prelude::string::String::from_utf8(
+											from_username.to_vec(),
+										) {
+											Ok(v) => v,
+											Err(e) => {
+												log::info!(
+													"###### decode from_username error  {:?}",
+													e
+												);
+												continue
+											},
+										};
+
+									let str_to_address =
+										match scale_info::prelude::string::String::from_utf8(
+											to_address.to_vec(),
+										) {
+											Ok(v) => v,
+											Err(e) => {
+												log::info!(
+													"###### decode to_address error  {:?}",
+													e
+												);
+												continue
+											},
+										};
+
+									let str_hash =
+										match scale_info::prelude::string::String::from_utf8(
+											v.to_vec(),
+										) {
+											Ok(v) => v,
+											Err(e) => {
+												log::info!(
+													"###### decode to_address error  {:?}",
+													e
+												);
+												continue
+											},
+										};
+
+									let rt = Self::send_mail_to_web2(
+										&str_from_username,
+										&str_from_username,
+										&str_to_address,
+										"subject",
+										"txt",
+										"html",
+										&str_hash,
+									);
+									match rt {
+										Ok(_code) => {
+											map_mailhash.insert(v);
+										},
+										Err(e) => {},
+									}
+								},
+							_ => {},
+						},
+						_ => {},
+					}
+				}
+				store_map_mailhash.set(&map_mailhash);
 			}
 
 			Ok(())
@@ -529,7 +671,87 @@ pub mod pallet {
 
 		// fn upload_mail_json(mailInfl: MailInfo) -> Result<&str, Error<T>> {}
 
-		// fn send_mail_to_web2() {}
+		fn send_mail_to_web2(
+			username: &str,
+			from: &str,
+			to: &str,
+			subject: &str,
+			txt_body: &str,
+			html_body: &str,
+			hash: &str,
+		) -> Result<u64, Error<T>> {
+			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(10_000));
+
+			let url = "http://127.0.0.1:8888/api/mails/create";
+			// let url = "http://mail1.pmailbox.org:8888/api/mails/create";
+
+			let full_emal_address = username.to_owned() + MAIL_SUFFIX;
+			let to_list = Vec::<String>::new();
+			let mailtype = "txt";
+
+			let create_mail_info = CreateMailInfo {
+				emailname: String::from(full_emal_address),
+				from: String::from(from),
+				to: to_list,
+				cc: Vec::<String>::new(),
+				bcc: Vec::<String>::new(),
+				subject: String::from(subject),
+				mailtype: String::from(mailtype),
+				text: String::from(txt_body),
+				html: String::from(html_body),
+				store_hash: String::from(""),
+			};
+
+			let buff = serde_json::to_string(&create_mail_info);
+
+			let request = http::Request::post(&url, buff);
+
+			let pending = request.send().map_err(|e| {
+				log::info!("####post pending error: {:?}", e);
+				<Error<T>>::HttpFetchingError
+			})?;
+
+			let response = pending
+				.try_wait(deadline)
+				.map_err(|e| {
+					log::info!("####post response error 1: {:?}", e);
+					<Error<T>>::DeadlineReached
+				})?
+				.map_err(|e| {
+					log::info!("####post response error 2: {:?}", e);
+					<Error<T>>::DeadlineReached
+				})?;
+
+			if response.code != 200 {
+				log::info!("Unexpected status code: {}", response.code);
+				return Err(<Error<T>>::StatueCodeError)
+			}
+
+			let body = response.body().collect::<Vec<u8>>();
+
+			// Create a str slice from the body.
+			let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
+				log::info!("No UTF8 body");
+				<Error<T>>::FormatError
+			})?;
+
+			let create_mail_response: CreateMailResponse = serde_json::from_str(&body_str)
+				.map_err(|e| {
+					log::info!("Deserialize error: {:?}", e);
+					<Error<T>>::DeserializeToObjError
+				})?;
+
+			if create_mail_response.code != 0 {
+				log::info!(
+					"Unexpected api status code: {:?}  {:?}",
+					create_mail_response.code,
+					create_mail_response.msg
+				);
+				return Err(<Error<T>>::StatueCodeError)
+			}
+
+			Ok(0)
+		}
 
 		fn add_mail(
 			block_number: T::BlockNumber,
@@ -568,6 +790,14 @@ pub mod pallet {
 			}
 
 			Ok(0)
+		}
+	}
+
+	impl<T: Config> BlockNumberProvider for Pallet<T> {
+		type BlockNumber = T::BlockNumber;
+
+		fn current_block_number() -> Self::BlockNumber {
+			<frame_system::Pallet<T>>::block_number()
 		}
 	}
 }
