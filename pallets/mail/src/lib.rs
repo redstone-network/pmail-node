@@ -65,12 +65,13 @@ pub struct Mail {
 }
 
 #[derive(Encode, Decode, Eq, PartialEq, Clone, RuntimeDebug, TypeInfo, MaxEncodedLen)]
-pub enum MailAddress {
-	SubAddr(BoundedVec<u8, ConstU32<128>>), // substrate address, start with 5...
-	ETHAddr(BoundedVec<u8, ConstU32<128>>), // ethereum address, start with 0...
+pub enum MailAddress<AccountId> {
+	SubAddr(AccountId),                          // substrate address, start with 5...
+	ETHAddr(BoundedVec<u8, ConstU32<128>>),      // ethereum address, start with 0...
 	MoonbeamAddr(BoundedVec<u8, ConstU32<128>>), // moonbeam address, start with 0...
-	NormalAddr(BoundedVec<u8, ConstU32<128>>), /* normal address, such as gmail, outlook.com...
-	                                         * //1@q.cn */
+	NormalAddr(BoundedVec<u8, ConstU32<128>>),   /* normal address, such as gmail,
+	                                              * outlook.com...
+	                                              * //1@q.cn */
 }
 
 #[frame_support::pallet]
@@ -260,7 +261,7 @@ pub mod pallet {
 		Twox64Concat,
 		T::AccountId,
 		Twox64Concat,
-		MailAddress,
+		MailAddress<T::AccountId>,
 		BoundedVec<u8, ConstU32<128>>,
 		OptionQuery,
 	>;
@@ -271,8 +272,8 @@ pub mod pallet {
 	pub type MailingList<T: Config> = StorageNMap<
 		_,
 		(
-			storage::Key<Blake2_128Concat, MailAddress>,
-			storage::Key<Blake2_128Concat, MailAddress>,
+			storage::Key<Blake2_128Concat, MailAddress<T::AccountId>>,
+			storage::Key<Blake2_128Concat, MailAddress<T::AccountId>>,
 			storage::Key<Blake2_128Concat, u64>,
 		),
 		BoundedVec<u8, ConstU32<128>>,
@@ -290,16 +291,16 @@ pub mod pallet {
 
 	/// Payload used by update recipe times to submit a transaction.
 	#[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, scale_info::TypeInfo)]
-	pub struct MailPayload<Public, BlockNumber> {
+	pub struct MailPayload<Public, BlockNumber, AccountId> {
 		pub block_number: BlockNumber,
-		pub from: MailAddress,
-		pub to: MailAddress,
+		pub from: MailAddress<AccountId>,
+		pub to: MailAddress<AccountId>,
 		pub timestamp: u64,
 		pub store_hash: BoundedVec<u8, ConstU32<128>>,
 		pub public: Public,
 	}
 
-	impl<T: SigningTypes> SignedPayload<T> for MailPayload<T::Public, T::BlockNumber> {
+	impl<T: SigningTypes> SignedPayload<T> for MailPayload<T::Public, T::BlockNumber, T::AccountId> {
 		fn public(&self) -> T::Public {
 			self.public.clone()
 		}
@@ -312,7 +313,7 @@ pub mod pallet {
 		/// parameters. [something, who]
 		AddressBound(T::AccountId, BoundedVec<u8, ConstU32<128>>),
 
-		SendMailSuccess(MailAddress, Mail),
+		SendMailSuccess(MailAddress<T::AccountId>, Mail),
 		UpdateAliasSuccess(T::AccountId, BoundedVec<u8, ConstU32<128>>),
 		SetAliasSuccess(T::AccountId, BoundedVec<u8, ConstU32<128>>),
 	}
@@ -367,7 +368,7 @@ pub mod pallet {
 		#[pallet::weight(10_000)]
 		pub fn set_alias(
 			origin: OriginFor<T>,
-			address: MailAddress,
+			address: MailAddress<T::AccountId>,
 			alias: BoundedVec<u8, ConstU32<128>>,
 		) -> DispatchResult {
 			let who = ensure_signed(origin)?;
@@ -392,14 +393,14 @@ pub mod pallet {
 		#[pallet::weight(10_000)]
 		pub fn send_mail(
 			origin: OriginFor<T>,
-			to: MailAddress,
+			to: MailAddress<T::AccountId>,
 			timestamp: u64,
 			store_hash: BoundedVec<u8, ConstU32<128>>,
 		) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 
 			ensure!(MailMap::<T>::contains_key(&who), Error::<T>::AddressMustBeExist);
-			let from = MailAddress::SubAddr(MailMap::<T>::get(&who).unwrap());
+			let from = MailAddress::SubAddr(who.clone());
 
 			ensure!(
 				!MailingList::<T>::contains_key((from.clone(), to.clone(), timestamp)),
@@ -412,7 +413,7 @@ pub mod pallet {
 
 			log::info!("------- mail send success: {:?}", mail);
 
-			Self::deposit_event(Event::SendMailSuccess(from, mail));
+			Self::deposit_event(Event::SendMailSuccess(from.clone(), mail));
 
 			Ok(())
 		}
@@ -420,7 +421,7 @@ pub mod pallet {
 		#[pallet::weight(0)]
 		pub fn submit_add_mail_with_signed_payload(
 			origin: OriginFor<T>,
-			mail_payload: MailPayload<T::Public, T::BlockNumber>,
+			mail_payload: MailPayload<T::Public, T::BlockNumber, T::AccountId>,
 			_signature: T::Signature,
 		) -> DispatchResult {
 			// This ensures that the function can only be called via unsigned transaction.
@@ -495,7 +496,7 @@ pub mod pallet {
 	impl<T: Config> Pallet<T> {
 		fn offchain_work_start(now: T::BlockNumber) -> Result<(), OffchainErr> {
 			//get mail for web2
-			for (_account_id, username) in MailMap::<T>::iter() {
+			for (account_id, username) in MailMap::<T>::iter() {
 				let strusername =
 					match scale_info::prelude::string::String::from_utf8(username.to_vec()) {
 						Ok(v) => v,
@@ -516,7 +517,8 @@ pub mod pallet {
 								let from = MailAddress::NormalAddr(
 									item.from[0].address.clone().try_into().unwrap(),
 								);
-								let to = MailAddress::SubAddr(username.clone());
+
+								let to = MailAddress::SubAddr(account_id.clone());
 
 								let timestamp = item.timestampe;
 								if !MailingList::<T>::contains_key((
@@ -558,10 +560,16 @@ pub mod pallet {
 					let to = k.1;
 
 					match from {
-						MailAddress::SubAddr(from_username) => match to {
+						MailAddress::SubAddr(from) => match to {
 							//todo SubAddr is 5
 							MailAddress::NormalAddr(to_address) =>
 								if !map_mailhash.contains(&v) {
+									if !MailMap::<T>::contains_key(&from) {
+										continue
+									}
+
+									let from_username = MailMap::<T>::get(&from).unwrap();
+
 									let str_from_username =
 										match scale_info::prelude::string::String::from_utf8(
 											from_username.to_vec(),
@@ -685,11 +693,11 @@ pub mod pallet {
 
 		fn send_mail_to_web2(
 			username: &str,
-			from: &str,
+			_from: &str,
 			to: &str,
-			subject: &str,
-			txt_body: &str,
-			html_body: &str,
+			_subject: &str,
+			_txt_body: &str,
+			_html_body: &str,
 			hash: &str,
 		) -> Result<u64, Error<T>> {
 			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(10_000));
@@ -764,8 +772,8 @@ pub mod pallet {
 
 		fn add_mail(
 			block_number: T::BlockNumber,
-			from: MailAddress,
-			to: MailAddress,
+			from: MailAddress<T::AccountId>,
+			to: MailAddress<T::AccountId>,
 			timestamp: u64,
 			store_hash: BoundedVec<u8, ConstU32<128>>,
 		) -> Result<u64, Error<T>> {
