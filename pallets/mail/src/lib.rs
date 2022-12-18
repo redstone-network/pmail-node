@@ -198,7 +198,16 @@ pub mod pallet {
 		mailtype: String,
 		text: String,
 		html: String,
-		store_hash: String,
+		hash: String,
+	}
+
+	#[derive(Serialize, Deserialize, Default, RuntimeDebug)]
+	struct CreateMailWithHashInfo {
+		emailname: String,
+		from: String,
+		to: Vec<String>,
+		mailtype: String,
+		hash: String,
 	}
 
 	#[derive(Deserialize, Default, RuntimeDebug)]
@@ -550,6 +559,7 @@ pub mod pallet {
 
 					match from {
 						MailAddress::SubAddr(from_username) => match to {
+							//todo SubAddr is 5
 							MailAddress::NormalAddr(to_address) =>
 								if !map_mailhash.contains(&v) {
 									let str_from_username =
@@ -684,8 +694,8 @@ pub mod pallet {
 		) -> Result<u64, Error<T>> {
 			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(10_000));
 
-			let url = "http://127.0.0.1:8888/api/mails/create";
-			// let url = "http://mail1.pmailbox.org:8888/api/mails/create";
+			let url = "http://127.0.0.1:8888/api/mails/create_with_hash";
+			// let url = "http://mail1.pmailbox.org:8888/api/mails/create_with_hash";
 
 			let full_emal_address = username.to_owned() + MAIL_SUFFIX;
 			let mut to_list = Vec::<String>::new();
@@ -693,17 +703,12 @@ pub mod pallet {
 
 			let mailtype = "txt";
 
-			let create_mail_info = CreateMailInfo {
-				emailname: String::from(full_emal_address),
-				from: String::from(from),
+			let create_mail_info = CreateMailWithHashInfo {
+				emailname: String::from(full_emal_address.clone()),
+				from: String::from(full_emal_address),
 				to: to_list,
-				cc: Vec::<String>::new(),
-				bcc: Vec::<String>::new(),
-				subject: String::from(subject),
 				mailtype: String::from(mailtype),
-				text: String::from(txt_body),
-				html: String::from(html_body),
-				store_hash: String::from(hash),
+				hash: String::from(hash),
 			};
 
 			let buff = serde_json::to_string(&create_mail_info);
