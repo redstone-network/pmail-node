@@ -542,8 +542,15 @@ pub mod pallet {
 									to.clone(),
 									timestamp,
 								)) {
+									let str_hash = match Self::upload_mail_json(item) {
+										Ok(v) => v,
+										Err(e) => {
+											log::info!("upload_mail_json err: {:?}", e);
+											continue
+										},
+									};
 									let hash: BoundedVec<u8, ConstU32<128>> =
-										Vec::new().try_into().unwrap(); //todo get hash from upload_mail_json
+										str_hash.as_bytes().to_vec().try_into().unwrap();
 
 									Self::add_mail(now, from, to, timestamp, hash);
 								}
@@ -705,14 +712,14 @@ pub mod pallet {
 			Ok(mail_list_response)
 		}
 
-		fn upload_mail_json(mailInfo: MailInfo) -> Result<String, Error<T>> {
+		fn upload_mail_json(mail_info: MailInfo) -> Result<String, Error<T>> {
 			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(10_000));
 
 			let uuid = Uuid::new_v5(&Uuid::NAMESPACE_DNS, b"pmailbox.org");
 			let url = "http://127.0.0.1:8887/api/storage/".to_owned() + &uuid.to_string();
 			// let url = "http://mail1.pmailbox.org:8888/api/mails/create_with_hash";
 
-			let buff = match serde_json::to_string(&mailInfo) {
+			let buff = match serde_json::to_string(&mail_info) {
 				Ok(v) => v,
 				Err(e) => {
 					log::info!("serde_json::to_string err: {}", e);
