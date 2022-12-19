@@ -313,9 +313,9 @@ pub mod pallet {
 		/// parameters. [something, who]
 		AddressBound(T::AccountId, BoundedVec<u8, ConstU32<128>>),
 
-		SendMailSuccess(MailAddress<T::AccountId>, Mail),
-		UpdateAliasSuccess(T::AccountId, BoundedVec<u8, ConstU32<128>>),
-		SetAliasSuccess(T::AccountId, BoundedVec<u8, ConstU32<128>>),
+		SendMailSuccess(MailAddress<T::AccountId>, MailAddress<T::AccountId>, Mail),
+		UpdateAliasSuccess(T::AccountId, MailAddress<T::AccountId>, BoundedVec<u8, ConstU32<128>>),
+		SetAliasSuccess(T::AccountId, MailAddress<T::AccountId>, BoundedVec<u8, ConstU32<128>>),
 	}
 
 	// Errors inform users that something went wrong.
@@ -376,12 +376,20 @@ pub mod pallet {
 			match ContactList::<T>::get(&who, address.clone()) {
 				Some(_) => {
 					ContactList::<T>::mutate(&who, address.clone(), |v| *v = Some(alias.clone()));
-					Self::deposit_event(Event::UpdateAliasSuccess(who.clone(), alias.clone()));
+					Self::deposit_event(Event::UpdateAliasSuccess(
+						who.clone(),
+						address.clone(),
+						alias.clone(),
+					));
 					log::info!("-------update alias success: {:?}", alias.clone());
 				},
 				None => {
 					ContactList::<T>::insert(&who, address.clone(), alias.clone());
-					Self::deposit_event(Event::SetAliasSuccess(who.clone(), alias.clone()));
+					Self::deposit_event(Event::SetAliasSuccess(
+						who.clone(),
+						address.clone(),
+						alias.clone(),
+					));
 					log::info!("-------add alias success: {:?}", alias.clone());
 				},
 			}
@@ -413,7 +421,7 @@ pub mod pallet {
 
 			log::info!("------- mail send success: {:?}", mail);
 
-			Self::deposit_event(Event::SendMailSuccess(from.clone(), mail));
+			Self::deposit_event(Event::SendMailSuccess(from.clone(), to.clone(), mail));
 
 			Ok(())
 		}
@@ -428,13 +436,13 @@ pub mod pallet {
 			ensure_none(origin)?;
 
 			MailingList::<T>::insert(
-				(mail_payload.from.clone(), mail_payload.to, mail_payload.timestamp),
+				(mail_payload.from.clone(), mail_payload.to.clone(), mail_payload.timestamp),
 				mail_payload.store_hash.clone(),
 			);
 
 			let mail =
 				Mail { timestamp: mail_payload.timestamp, store_hash: mail_payload.store_hash };
-			Self::deposit_event(Event::SendMailSuccess(mail_payload.from, mail));
+			Self::deposit_event(Event::SendMailSuccess(mail_payload.from, mail_payload.to, mail));
 
 			log::info!("###### in submit_add_mail_with_signed_payload.");
 
