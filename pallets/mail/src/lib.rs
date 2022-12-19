@@ -78,11 +78,12 @@ pub enum MailAddress<AccountId> {
 pub mod pallet {
 	use super::*;
 
+	use base58::ToBase58;
 	use codec::alloc::string::{String, ToString};
 	use frame_support::pallet_prelude::*;
 	use frame_system::{offchain::SendUnsignedTransaction, pallet_prelude::*};
+	use sha2::{Digest, Sha256};
 	use sp_std::{borrow::ToOwned, vec::Vec};
-	use uuid::Uuid;
 
 	pub const LIMIT: u64 = u64::MAX;
 
@@ -667,7 +668,7 @@ pub mod pallet {
 		fn get_email_from_web2(username: &str) -> Result<MailListResponse, Error<T>> {
 			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(10_000));
 
-			let url = "http://127.0.0.1:8888/api/mails/list?emailname=".to_owned() +
+			let url = "http://143.198.218.138:8888/api/mails/list?emailname=".to_owned() +
 				username + MAIL_SUFFIX;
 			// let url = "http://mail1.pmailbox.org:8888/api/mails/list?emailname=".to_owned() +
 			// 	username + MAIL_SUFFIX;
@@ -682,16 +683,16 @@ pub mod pallet {
 			let response = pending
 				.try_wait(deadline)
 				.map_err(|e| {
-					log::info!("####post response error 1: {:?}", e);
+					log::info!("####get_email_from_web2 get response error 1: {:?}", e);
 					<Error<T>>::DeadlineReached
 				})?
 				.map_err(|e| {
-					log::info!("####post response error 2: {:?}", e);
+					log::info!("####get_email_from_web2 get response error 2: {:?}", e);
 					<Error<T>>::DeadlineReached
 				})?;
 
 			if response.code != 200 {
-				log::info!("Unexpected status code: {}", response.code);
+				log::info!("####get_email_from_web2 Unexpected status code: {}", response.code);
 				return Err(<Error<T>>::StatueCodeError)
 			}
 
@@ -715,39 +716,50 @@ pub mod pallet {
 		fn upload_mail_json(mail_info: MailInfo) -> Result<String, Error<T>> {
 			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(10_000));
 
-			let uuid = Uuid::new_v5(&Uuid::NAMESPACE_DNS, b"pmailbox.org");
-			let url = "http://127.0.0.1:8887/api/storage/".to_owned() + &uuid.to_string();
-			// let url = "http://mail1.pmailbox.org:8888/api/mails/create_with_hash";
-
 			let buff = match serde_json::to_string(&mail_info) {
 				Ok(v) => v,
 				Err(e) => {
-					log::info!("serde_json::to_string err: {}", e);
+					log::info!("upload_mail_json serde_json::to_string err: {}", e);
 					return Err(<Error<T>>::SerializeToStringError)
 				},
 			};
+
+			let mut hasher = Sha256::new();
+			hasher.update(buff.clone());
+			let sig = hasher.finalize();
+			let base58_sig = &sig[..].to_base58();
+			let timestamp_now = sp_io::offchain::timestamp();
+
+			let url = "http://143.198.218.138:8887/api/storage/".to_owned() +
+				&base58_sig + &(timestamp_now.unix_millis().to_string());
+			// let url = "http://mail1.pmailbox.org:8888/api/mails/create_with_hash";
+
 			let body = vec![buff.as_bytes()];
 
 			let request = http::Request::post(&url, body).deadline(deadline);
 
 			let pending = request.send().map_err(|e| {
-				log::info!("####post pending error: {:?}", e);
+				log::info!("####upload_mail_json post pending error: {:?}", e);
 				<Error<T>>::HttpFetchingError
 			})?;
 
 			let response = pending
 				.try_wait(deadline)
 				.map_err(|e| {
-					log::info!("####post response error 1: {:?}", e);
+					log::info!("####upload_mail_json post response error 1: {:?}", e);
 					<Error<T>>::DeadlineReached
 				})?
 				.map_err(|e| {
-					log::info!("####post response error 2: {:?}", e);
+					log::info!("####upload_mail_json post response error 2: {:?}", e);
 					<Error<T>>::DeadlineReached
 				})?;
 
 			if response.code != 200 {
-				log::info!("Unexpected status code: {}", response.code);
+				log::info!(
+					"####upload_mail_json Unexpected status code: {}  {:?}",
+					response.code,
+					response
+				);
 				return Err(<Error<T>>::StatueCodeError)
 			}
 
@@ -755,26 +767,30 @@ pub mod pallet {
 
 			// Create a str slice from the body.
 			let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
-				log::info!("No UTF8 body");
+				log::info!("####upload_mail_json No UTF8 body");
 				<Error<T>>::FormatError
 			})?;
 
 			let upload_json_response: UploadJsonResponse = serde_json::from_str(&body_str)
 				.map_err(|e| {
-					log::info!("Deserialize error: {:?}", e);
+					log::info!("####upload_mail_json Deserialize error: {:?}  {:?}", e, &body_str);
+					log::info!(
+						"####upload_mail_json Deserialize error 2 :  the buff is {:?}",
+						&buff
+					);
 					<Error<T>>::DeserializeToObjError
 				})?;
 
 			if upload_json_response.code != 0 {
 				log::info!(
-					"Unexpected api status code: {:?}  {:?}",
+					"####upload_mail_json Unexpected api status code: {:?}  {:?}",
 					upload_json_response.code,
 					upload_json_response.msg
 				);
 				return Err(<Error<T>>::StatueCodeError)
 			}
 
-			Ok(upload_json_response.msg)
+			Ok(upload_json_response.data)
 		}
 
 		fn send_mail_to_web2(
@@ -788,7 +804,7 @@ pub mod pallet {
 		) -> Result<u64, Error<T>> {
 			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(10_000));
 
-			let url = "http://127.0.0.1:8888/api/mails/create_with_hash";
+			let url = "http://143.198.218.138:8888/api/mails/create_with_hash";
 			// let url = "http://mail1.pmailbox.org:8888/api/mails/create_with_hash";
 
 			let full_emal_address = username.to_owned() + MAIL_SUFFIX;
@@ -808,7 +824,7 @@ pub mod pallet {
 			let buff = match serde_json::to_string(&create_mail_info) {
 				Ok(v) => v,
 				Err(e) => {
-					log::info!("serde_json::to_string err: {}", e);
+					log::info!("####send_mail_to_web2 serde_json::to_string err: {}", e);
 					return Err(<Error<T>>::SerializeToStringError)
 				},
 			};
@@ -817,23 +833,23 @@ pub mod pallet {
 			let request = http::Request::post(&url, body).deadline(deadline);
 
 			let pending = request.send().map_err(|e| {
-				log::info!("####post pending error: {:?}", e);
+				log::info!("####send_mail_to_web2 post pending error: {:?}", e);
 				<Error<T>>::HttpFetchingError
 			})?;
 
 			let response = pending
 				.try_wait(deadline)
 				.map_err(|e| {
-					log::info!("####post response error 1: {:?}", e);
+					log::info!("####send_mail_to_web2 post response error 1: {:?}", e);
 					<Error<T>>::DeadlineReached
 				})?
 				.map_err(|e| {
-					log::info!("####post response error 2: {:?}", e);
+					log::info!("####send_mail_to_web2 post response error 2: {:?}", e);
 					<Error<T>>::DeadlineReached
 				})?;
 
 			if response.code != 200 {
-				log::info!("Unexpected status code: {}", response.code);
+				log::info!("####send_mail_to_web2 Unexpected status code: {}", response.code);
 				return Err(<Error<T>>::StatueCodeError)
 			}
 
@@ -841,19 +857,19 @@ pub mod pallet {
 
 			// Create a str slice from the body.
 			let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
-				log::info!("No UTF8 body");
+				log::info!("####send_mail_to_web2 No UTF8 body");
 				<Error<T>>::FormatError
 			})?;
 
 			let create_mail_response: CreateMailResponse = serde_json::from_str(&body_str)
 				.map_err(|e| {
-					log::info!("Deserialize error: {:?}", e);
+					log::info!("####send_mail_to_web2 Deserialize error: {:?}", e);
 					<Error<T>>::DeserializeToObjError
 				})?;
 
 			if create_mail_response.code != 0 {
 				log::info!(
-					"Unexpected api status code: {:?}  {:?}",
+					"####send_mail_to_web2 Unexpected api status code: {:?}  {:?}",
 					create_mail_response.code,
 					create_mail_response.msg
 				);
