@@ -78,10 +78,12 @@ pub enum MailAddress<AccountId> {
 pub mod pallet {
 	use super::*;
 
+	use codec::alloc::string::ToString;
 	use frame_support::pallet_prelude::*;
 	use frame_system::{offchain::SendUnsignedTransaction, pallet_prelude::*};
 	use scale_info::prelude::string::String;
 	use sp_std::{borrow::ToOwned, vec::Vec};
+	use uuid::Uuid;
 
 	pub const LIMIT: u64 = u64::MAX;
 
@@ -331,6 +333,7 @@ pub mod pallet {
 		DeadlineReached,
 		StatueCodeError,
 		FormatError,
+		SerializeToStringError,
 		DeserializeToObjError,
 	}
 
@@ -697,7 +700,83 @@ pub mod pallet {
 			Ok(mail_list_response)
 		}
 
-		// fn upload_mail_json(mailInfl: MailInfo) -> Result<&str, Error<T>> {}
+		// fn upload_mail_json(mailInfl: MailInfo) -> Result<String, Error<T>> {
+		// 	let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(10_000));
+
+		// 	let url = "http://127.0.0.1:8888/api/mails/create_with_hash";
+		// 	// let url = "http://mail1.pmailbox.org:8888/api/mails/create_with_hash";
+
+		// 	let full_emal_address = username.to_owned() + MAIL_SUFFIX;
+		// 	let mut to_list = Vec::<String>::new();
+		// 	to_list.push(String::from(to));
+
+		// 	let mailtype = "txt";
+
+		// 	let create_mail_info = CreateMailWithHashInfo {
+		// 		emailname: String::from(full_emal_address.clone()),
+		// 		from: String::from(full_emal_address),
+		// 		to: to_list,
+		// 		mailtype: String::from(mailtype),
+		// 		hash: String::from(hash),
+		// 	};
+
+		// 	let buff = match serde_json::to_string(&create_mail_info) {
+		// 		Ok(v) => v,
+		// 		Err(e) => {
+		// 			log::info!("serde_json::to_string err: {}", e);
+		// 			return Err(<Error<T>>::SerializeToStringError)
+		// 		},
+		// 	};
+		// 	let body = vec![buff.as_bytes()];
+
+		// 	let request = http::Request::post(&url, body).deadline(deadline);
+
+		// 	let pending = request.send().map_err(|e| {
+		// 		log::info!("####post pending error: {:?}", e);
+		// 		<Error<T>>::HttpFetchingError
+		// 	})?;
+
+		// 	let response = pending
+		// 		.try_wait(deadline)
+		// 		.map_err(|e| {
+		// 			log::info!("####post response error 1: {:?}", e);
+		// 			<Error<T>>::DeadlineReached
+		// 		})?
+		// 		.map_err(|e| {
+		// 			log::info!("####post response error 2: {:?}", e);
+		// 			<Error<T>>::DeadlineReached
+		// 		})?;
+
+		// 	if response.code != 200 {
+		// 		log::info!("Unexpected status code: {}", response.code);
+		// 		return Err(<Error<T>>::StatueCodeError)
+		// 	}
+
+		// 	let body = response.body().collect::<Vec<u8>>();
+
+		// 	// Create a str slice from the body.
+		// 	let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
+		// 		log::info!("No UTF8 body");
+		// 		<Error<T>>::FormatError
+		// 	})?;
+
+		// 	let create_mail_response: CreateMailResponse = serde_json::from_str(&body_str)
+		// 		.map_err(|e| {
+		// 			log::info!("Deserialize error: {:?}", e);
+		// 			<Error<T>>::DeserializeToObjError
+		// 		})?;
+
+		// 	if create_mail_response.code != 0 {
+		// 		log::info!(
+		// 			"Unexpected api status code: {:?}  {:?}",
+		// 			create_mail_response.code,
+		// 			create_mail_response.msg
+		// 		);
+		// 		return Err(<Error<T>>::StatueCodeError)
+		// 	}
+
+		// 	Ok(0)
+		// }
 
 		fn send_mail_to_web2(
 			username: &str,
@@ -727,9 +806,16 @@ pub mod pallet {
 				hash: String::from(hash),
 			};
 
-			let buff = serde_json::to_string(&create_mail_info);
+			let buff = match serde_json::to_string(&create_mail_info) {
+				Ok(v) => v,
+				Err(e) => {
+					log::info!("serde_json::to_string err: {}", e);
+					return Err(<Error<T>>::SerializeToStringError)
+				},
+			};
+			let body = vec![buff.as_bytes()];
 
-			let request = http::Request::post(&url, buff);
+			let request = http::Request::post(&url, body).deadline(deadline);
 
 			let pending = request.send().map_err(|e| {
 				log::info!("####post pending error: {:?}", e);
