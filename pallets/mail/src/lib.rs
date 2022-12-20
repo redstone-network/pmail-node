@@ -165,6 +165,7 @@ pub mod pallet {
 		timestampe: u64,
 	}
 
+	/// return info
 	#[derive(Deserialize, Encode, Decode, Default, RuntimeDebug)]
 	struct MailListResponse {
 		data: Vec<MailInfo>,
@@ -172,6 +173,10 @@ pub mod pallet {
 		#[serde(deserialize_with = "de_string_to_bytes")]
 		msg: Vec<u8>,
 	}
+
+	// struct TestResponse {
+	// 	data:&'static str,
+	// }
 
 	/*
 	{
@@ -218,6 +223,12 @@ pub mod pallet {
 		code: u64,
 		#[serde(deserialize_with = "de_string_to_bytes")]
 		msg: Vec<u8>,
+	}
+	#[derive(Deserialize, Default, RuntimeDebug)]
+	struct ResponseStruct {
+		data: String,
+		code: u64,
+		msg: String,
 	}
 
 	#[derive(Deserialize, Default, RuntimeDebug)]
@@ -350,6 +361,8 @@ pub mod pallet {
 		/// An example dispatchable that takes a singles value as a parameter, writes the value to
 		/// storage and emits an event. This function must be dispatched by a signed extrinsic.
 
+		/// A function to bind PMail to current address, the address and email address have a
+		/// one-to-one relationship and cannot be bound again
 		#[pallet::weight(10_000)]
 		pub fn bind_address(
 			origin: OriginFor<T>,
@@ -373,6 +386,7 @@ pub mod pallet {
 			Ok(())
 		}
 
+		/// A function to set an alias for one's own contacts, and the alias can be modified again
 		#[pallet::weight(10_000)]
 		pub fn set_alias(
 			origin: OriginFor<T>,
@@ -405,7 +419,7 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// send email
+		/// A function that sends mail to any type of address
 		#[pallet::weight(10_000)]
 		pub fn send_mail(
 			origin: OriginFor<T>,
@@ -423,17 +437,19 @@ pub mod pallet {
 				Error::<T>::MailSendDuplicate
 			);
 
+			// add mail to mailing list
 			MailingList::<T>::insert((from.clone(), to.clone(), timestamp), store_hash.clone());
 
 			let mail = Mail { timestamp, store_hash };
 
-			log::info!("------- mail send success: {:?}", mail);
+			log::info!("------- mail send success");
 
 			Self::deposit_event(Event::SendMailSuccess(from.clone(), to.clone(), mail));
 
 			Ok(())
 		}
 
+		/// A function to upload the mail sent by web2 mailbox to pmail to the chain
 		#[pallet::weight(0)]
 		pub fn submit_add_mail_with_signed_payload(
 			origin: OriginFor<T>,
@@ -509,9 +525,11 @@ pub mod pallet {
 		}
 	}
 
+	/// Synchronize the obtained web2 mailbox information to the chain and send the web3 mailbox to
+	/// the connected web2 mailbox
 	impl<T: Config> Pallet<T> {
 		fn offchain_work_start(now: T::BlockNumber) -> Result<(), OffchainErr> {
-			//get mail for web2
+			//get mail for web2, username is a mail address in the format of pmail
 			for (account_id, username) in MailMap::<T>::iter() {
 				let strusername =
 					match scale_info::prelude::string::String::from_utf8(username.to_vec()) {
@@ -555,7 +573,8 @@ pub mod pallet {
 				}
 			}
 
-			//sen mail to web2
+			//send mail to web2, username is a mail address in the format of any web2 mail
+			// address,such as gmail, outlook and so on
 			let store_map_mailhash = StorageValueRef::persistent(b"difttt_ocw::map_mailhash");
 			let mut map_mailhash: BTreeSet<BoundedVec<u8, ConstU32<128>>>;
 			if let Ok(Some(info)) =
@@ -657,6 +676,7 @@ pub mod pallet {
 			Ok(())
 		}
 
+		/// get mail content from web2 mailboxes
 		fn get_email_from_web2(username: &str) -> Result<MailListResponse, Error<T>> {
 			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(10_000));
 
@@ -705,6 +725,7 @@ pub mod pallet {
 			Ok(mail_list_response)
 		}
 
+		/// Store email content on a decentralized network
 		fn upload_mail_json(mailInfo: MailInfo) -> Result<String, Error<T>> {
 			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(10_000));
 
@@ -770,6 +791,7 @@ pub mod pallet {
 			Ok(upload_json_response.msg)
 		}
 
+		/// send email to web2 mailboxes
 		fn send_mail_to_web2(
 			username: &str,
 			_from: &str,
@@ -782,7 +804,7 @@ pub mod pallet {
 			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(10_000));
 
 			let url = "http://127.0.0.1:8888/api/mails/create_with_hash";
-			// let url = "http://mail1.pmailbox.org:8888/api/mails/create_with_hash";
+			// let url = "http://mail1.pmailbox.org:8888/api/mails/create_with_hash";\
 
 			let full_emal_address = username.to_owned() + MAIL_SUFFIX;
 			let mut to_list = Vec::<String>::new();
@@ -801,7 +823,7 @@ pub mod pallet {
 			let buff = match serde_json::to_string(&create_mail_info) {
 				Ok(v) => v,
 				Err(e) => {
-					log::info!("serde_json::to_string err: {}", e);
+					log::info!("----serde_json::to_string err: {}", e);
 					return Err(<Error<T>>::SerializeToStringError)
 				},
 			};
@@ -810,18 +832,18 @@ pub mod pallet {
 			let request = http::Request::post(&url, body).deadline(deadline);
 
 			let pending = request.send().map_err(|e| {
-				log::info!("####post pending error: {:?}", e);
+				log::info!("----####post pending error: {:?}", e);
 				<Error<T>>::HttpFetchingError
 			})?;
 
 			let response = pending
 				.try_wait(deadline)
 				.map_err(|e| {
-					log::info!("####post response error 1: {:?}", e);
+					log::info!("----####post response error 1: {:?}", e);
 					<Error<T>>::DeadlineReached
 				})?
 				.map_err(|e| {
-					log::info!("####post response error 2: {:?}", e);
+					log::info!("----####post response error 2: {:?}", e);
 					<Error<T>>::DeadlineReached
 				})?;
 
@@ -834,28 +856,31 @@ pub mod pallet {
 
 			// Create a str slice from the body.
 			let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
-				log::info!("No UTF8 body");
+				log::info!("------No UTF8 body");
 				<Error<T>>::FormatError
 			})?;
 
-			let create_mail_response: CreateMailResponse = serde_json::from_str(&body_str)
-				.map_err(|e| {
-					log::info!("Deserialize error: {:?}", e);
+			let create_mail_response: ResponseStruct =
+				serde_json::from_str(&body_str).map_err(|e| {
+					log::info!("------Deserialize error: {:?}", e);
 					<Error<T>>::DeserializeToObjError
 				})?;
 
 			if create_mail_response.code != 0 {
 				log::info!(
-					"Unexpected api status code: {:?}  {:?}",
+					"------Unexpected api status code: {:?}  {:?}",
 					create_mail_response.code,
 					create_mail_response.msg
 				);
 				return Err(<Error<T>>::StatueCodeError)
 			}
 
+			log::info!("------Web2 mail send successfully");
+
 			Ok(0)
 		}
 
+		/// Integrate the mail of web2 mailbox into pmail network
 		fn add_mail(
 			block_number: T::BlockNumber,
 			from: MailAddress<T::AccountId>,
