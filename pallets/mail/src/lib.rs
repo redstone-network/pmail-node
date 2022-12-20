@@ -79,7 +79,10 @@ pub mod pallet {
 	use super::*;
 
 	use base58::ToBase58;
-	use codec::alloc::string::{String, ToString};
+	use codec::{
+		alloc::string::{String, ToString},
+		Decode, Encode,
+	};
 	use frame_support::pallet_prelude::*;
 	use frame_system::{offchain::SendUnsignedTransaction, pallet_prelude::*};
 	use sha2::{Digest, Sha256};
@@ -142,36 +145,30 @@ pub mod pallet {
 	}
 	*/
 
-	#[derive(Serialize, Deserialize, Encode, Decode, Default, RuntimeDebug)]
+	#[derive(Serialize, Deserialize, Default, RuntimeDebug)]
 	struct AddressInfo {
-		#[serde(deserialize_with = "de_string_to_bytes", alias = "name", alias = "Name")]
-		name: Vec<u8>,
-		#[serde(deserialize_with = "de_string_to_bytes", alias = "address", alias = "Address")]
-		address: Vec<u8>,
+		#[serde(alias = "name", alias = "Name")]
+		name: String,
+		#[serde(alias = "address", alias = "Address")]
+		address: String,
 	}
 
-	#[derive(Serialize, Deserialize, Encode, Decode, Default, RuntimeDebug)]
+	#[derive(Serialize, Deserialize, Default, RuntimeDebug)]
 	struct MailInfo {
-		#[serde(deserialize_with = "de_string_to_bytes")]
-		subject: Vec<u8>,
-		#[serde(deserialize_with = "de_string_to_bytes")]
-		body: Vec<u8>,
-
+		subject: String,
+		body: String,
 		from: Vec<AddressInfo>,
 		to: Vec<AddressInfo>,
-
-		#[serde(deserialize_with = "de_string_to_bytes")]
-		date: Vec<u8>,
+		date: String,
 
 		timestampe: u64,
 	}
 
-	#[derive(Deserialize, Encode, Decode, Default, RuntimeDebug)]
+	#[derive(Deserialize, Default, RuntimeDebug)]
 	struct MailListResponse {
 		data: Vec<MailInfo>,
 		code: u64,
-		#[serde(deserialize_with = "de_string_to_bytes")]
-		msg: Vec<u8>,
+		msg: String,
 	}
 
 	/*
@@ -532,7 +529,13 @@ pub mod pallet {
 
 							for item in mail_list_web2.data {
 								let from = MailAddress::NormalAddr(
-									item.from[0].address.clone().try_into().unwrap(),
+									item.from[0]
+										.address
+										.clone()
+										.as_bytes()
+										.to_vec()
+										.try_into()
+										.unwrap(),
 								);
 
 								let to = MailAddress::SubAddr(account_id.clone());
@@ -700,13 +703,17 @@ pub mod pallet {
 
 			// Create a str slice from the body.
 			let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
-				log::info!("No UTF8 body");
+				log::info!("######get_email_from_web2 No UTF8 body");
 				<Error<T>>::FormatError
 			})?;
 
 			let mail_list_response: MailListResponse =
 				serde_json::from_str(&body_str).map_err(|e| {
-					log::info!("Deserialize error: {:?}", e);
+					log::info!(
+						"##### get_email_from_web2Deserialize error: {:?}  {:?}",
+						e,
+						&body_str
+					);
 					<Error<T>>::DeserializeToObjError
 				})?;
 
@@ -763,17 +770,22 @@ pub mod pallet {
 				return Err(<Error<T>>::StatueCodeError)
 			}
 
-			let body = response.body().collect::<Vec<u8>>();
+			let respone_body = response.body().collect::<Vec<u8>>();
 
 			// Create a str slice from the body.
-			let body_str = sp_std::str::from_utf8(&body).map_err(|_| {
+			let respone_body_str = sp_std::str::from_utf8(&respone_body).map_err(|_| {
 				log::info!("####upload_mail_json No UTF8 body");
 				<Error<T>>::FormatError
 			})?;
 
-			let upload_json_response: UploadJsonResponse = serde_json::from_str(&body_str)
+			let upload_json_response: UploadJsonResponse = serde_json::from_str(&respone_body_str)
 				.map_err(|e| {
-					log::info!("####upload_mail_json Deserialize error: {:?}  {:?}", e, &body_str);
+					log::info!(
+						"####upload_mail_json Deserialize error 1: {:?}  {:?} , url is: {:?}",
+						e,
+						&respone_body_str,
+						&url
+					);
 					log::info!(
 						"####upload_mail_json Deserialize error 2 :  the buff is {:?}",
 						&buff
