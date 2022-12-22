@@ -13,11 +13,11 @@ fn it_works_for_bind_address() {
 		let pmail_address: BoundedVec<u8, ConstU32<128>> = vec![1, 2, 3].try_into().unwrap();
 
 		// assert
-		assert_ok!(MailModule::bind_address(RuntimeOrigin::signed(signer), pmail_address));
+		assert_ok!(MailModule::bind_address(RuntimeOrigin::signed(signer), pmail_address.clone()));
 
 		// assert transfer limit owner
-		assert_eq!(MailMap::<Test>::get(signer), Some(pmail_address));
-		assert_eq!(OwnerMap::<Test>::get(pmail_address), Some(signer));
+		assert_eq!(MailMap::<Test>::get(signer), Some(pmail_address.clone()));
+		assert_eq!(OwnerMap::<Test>::get(pmail_address.clone()), Some(signer));
 
 		// assert successful events
 		System::assert_has_event(Event::MailModule(crate::Event::AddressBound(
