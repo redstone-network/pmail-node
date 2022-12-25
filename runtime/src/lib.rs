@@ -1607,15 +1607,28 @@ impl pallet_alliance::Config for Runtime {
 	type RetirementPeriod = RetirementPeriod;
 }
 
+pub const MILLISECS_PER_BLOCK: u64 = 6000;
+pub const MINUTES: BlockNumber = 60_000 / (MILLISECS_PER_BLOCK as BlockNumber);
+pub const HOURS: BlockNumber = MINUTES * 60;
+pub const DAYS: BlockNumber = HOURS * 24;
+
 parameter_types! {
 	pub const UnsignedPriority: BlockNumber = 1;
+	pub const LockTime: BlockNumber = HOURS / 60;
+	#[derive(Clone, PartialEq, Eq)]
+	pub const KeyStringLimit: u32 = 10240;
 }
 
 impl pallet_mail::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 
-	type AuthorityId = pallet_mail::crypto::TestAuthId;
+	type AuthorityId = pallet_mail::sr25519::AuthorityId;
 	type UnsignedPriority = UnsignedPriority;
+	type LockTime = LockTime;
+	type StringLimit = KeyStringLimit;
+	type FindAuthor = pallet_session::FindAccountFromAuthorIndex<Self, Babe>;
+	type ValidatorSet = Historical;
+	type NextSessionRotation = Babe;
 }
 
 construct_runtime!(

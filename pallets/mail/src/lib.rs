@@ -15,7 +15,13 @@ mod tests;
 mod benchmarking;
 
 use codec::{Decode, Encode, MaxEncodedLen};
-use frame_support::{traits::ConstU32, BoundedVec};
+use frame_support::{
+	traits::{
+		ConstU32, EstimateNextSessionRotation, FindAuthor, OneSessionHandler,
+		ValidatorSetWithIdentification,
+	},
+	BoundedSlice, BoundedVec, WeakBoundedVec,
+};
 use frame_system::offchain::{
 	AppCrypto, CreateSignedTransaction, SignedPayload, Signer, SigningTypes,
 };
@@ -25,12 +31,12 @@ use sp_core::crypto::KeyTypeId;
 use sp_runtime::{
 	offchain::{
 		http,
-		storage::StorageValueRef,
+		storage::{StorageRetrievalError, StorageValueRef},
 		storage_lock::{BlockAndTime, StorageLock},
 		Duration,
 	},
 	traits::BlockNumberProvider,
-	RuntimeDebug,
+	RuntimeAppPublic, RuntimeDebug,
 };
 use sp_std::{
 	cmp::{Eq, PartialEq},
@@ -46,14 +52,25 @@ const LOCK_TIMEOUT_EXPIRATION: u64 = FETCH_TIMEOUT_PERIOD + 1000; // in milli-se
 const LOCK_BLOCK_EXPIRATION: u32 = 3; // in block number
 
 enum OffchainErr {
+	UnexpectedError,
+	Ineligible,
+	GenerateInfoError,
+	NetworkState,
+	FailedSigning,
+	Overflow,
 	Working,
 }
 
 impl sp_std::fmt::Debug for OffchainErr {
 	fn fmt(&self, fmt: &mut sp_std::fmt::Formatter) -> sp_std::fmt::Result {
 		match *self {
-			OffchainErr::Working =>
-				write!(fmt, "The offline working machine is currently executing work"),
+			OffchainErr::UnexpectedError => write!(fmt, "Should not appear, Unexpected error."),
+			OffchainErr::Ineligible => write!(fmt, "The current node does not have the qualification to execute offline working machines"),
+			OffchainErr::GenerateInfoError => write!(fmt, "Failed to generate random file meta information"),
+			OffchainErr::NetworkState => write!(fmt, "Failed to obtain the network status of the offline working machine"),
+			OffchainErr::FailedSigning => write!(fmt, "Signing summary information failed"),
+			OffchainErr::Overflow => write!(fmt, "Calculation data, boundary overflow"),
+			OffchainErr::Working => write!(fmt, "The offline working machine is currently executing work"),
 		}
 	}
 }
@@ -84,43 +101,29 @@ pub mod pallet {
 		Decode, Encode,
 	};
 	use frame_support::pallet_prelude::*;
-	use frame_system::{offchain::SendUnsignedTransaction, pallet_prelude::*};
+	use frame_system::{
+		offchain::{SendUnsignedTransaction, SubmitTransaction},
+		pallet_prelude::*,
+	};
 	use sha2::{Digest, Sha256};
 	use sp_std::{borrow::ToOwned, vec::Vec};
 
 	pub const LIMIT: u64 = u64::MAX;
 
-	pub mod crypto {
-		use super::KEY_TYPE;
-		use scale_info::prelude::format;
-		use sp_core::sr25519::Signature as Sr25519Signature;
-		use sp_runtime::{
-			app_crypto::{app_crypto, sr25519},
-			traits::Verify,
-			MultiSignature, MultiSigner,
-		};
-
-		app_crypto!(sr25519, KEY_TYPE);
-
-		pub struct TestAuthId;
-		// implemented for ocw-runtime
-		impl frame_system::offchain::AppCrypto<MultiSigner, MultiSignature> for TestAuthId {
-			type RuntimeAppPublic = Public;
-			type GenericSignature = sp_core::sr25519::Signature;
-			type GenericPublic = sp_core::sr25519::Public;
+	pub mod sr25519 {
+		mod app_sr25519 {
+			use crate::*;
+			use sp_runtime::app_crypto::{app_crypto, sr25519};
+			app_crypto!(sr25519, KEY_TYPE);
 		}
 
-		// implemented for mock runtime in test
-		impl
-			frame_system::offchain::AppCrypto<
-				<Sr25519Signature as Verify>::Signer,
-				Sr25519Signature,
-			> for TestAuthId
-		{
-			type RuntimeAppPublic = Public;
-			type GenericSignature = sp_core::sr25519::Signature;
-			type GenericPublic = sp_core::sr25519::Public;
+		sp_runtime::app_crypto::with_pair! {
+			pub type AuthorityPair = app_sr25519::Pair;
 		}
+
+		pub type AuthoritySignature = app_sr25519::Signature;
+
+		pub type AuthorityId = app_sr25519::Public;
 	}
 
 	/*
@@ -256,8 +259,20 @@ pub mod pallet {
 		/// Because this pallet emits events, it depends on the runtime's definition of an event.
 		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
-		/// The identifier type for an offchain worker.
-		type AuthorityId: AppCrypto<Self::Public, Self::Signature>;
+		/// Find the consensus of the current block
+		type FindAuthor: FindAuthor<Self::AccountId>;
+
+		/// Configuration to be used for offchain worker
+		type AuthorityId: Member
+			+ Parameter
+			+ RuntimeAppPublic
+			+ Ord
+			+ MaybeSerializeDeserialize
+			+ MaxEncodedLen;
+		/// Verifier of this round
+		type ValidatorSet: ValidatorSetWithIdentification<Self::AccountId>;
+		/// Information for the next session
+		type NextSessionRotation: EstimateNextSessionRotation<Self::BlockNumber>;
 
 		/// A configuration for base priority of unsigned transactions.
 		///
@@ -265,6 +280,12 @@ pub mod pallet {
 		/// multiple pallets send unsigned transactions.
 		#[pallet::constant]
 		type UnsignedPriority: Get<TransactionPriority>;
+
+		#[pallet::constant]
+		type StringLimit: Get<u32> + Clone + Eq + PartialEq;
+
+		#[pallet::constant]
+		type LockTime: Get<Self::BlockNumber>;
 	}
 
 	///  bind user's redstone network address to other mail address (such ethereum address, moonbeam
@@ -304,22 +325,14 @@ pub mod pallet {
 	pub(super) type OwnerMap<T: Config> =
 		StorageMap<_, Twox64Concat, BoundedVec<u8, ConstU32<128>>, T::AccountId>;
 
-	/// Payload used by update recipe times to submit a transaction.
-	#[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, scale_info::TypeInfo)]
-	pub struct MailPayload<Public, BlockNumber, AccountId> {
-		pub block_number: BlockNumber,
-		pub from: MailAddress<AccountId>,
-		pub to: MailAddress<AccountId>,
-		pub timestamp: u64,
-		pub store_hash: BoundedVec<u8, ConstU32<128>>,
-		pub public: Public,
-	}
+	#[pallet::storage]
+	#[pallet::getter(fn cur_authority_index)]
+	pub(super) type CurAuthorityIndex<T: Config> = StorageValue<_, u16, ValueQuery>;
 
-	impl<T: SigningTypes> SignedPayload<T> for MailPayload<T::Public, T::BlockNumber, T::AccountId> {
-		fn public(&self) -> T::Public {
-			self.public.clone()
-		}
-	}
+	#[pallet::storage]
+	#[pallet::getter(fn keys)]
+	pub(super) type Keys<T: Config> =
+		StorageValue<_, WeakBoundedVec<T::AuthorityId, T::StringLimit>, ValueQuery>;
 
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -348,6 +361,7 @@ pub mod pallet {
 		FormatError,
 		SerializeToStringError,
 		DeserializeToObjError,
+		OffchainUnsignedTxError,
 	}
 
 	// Dispatchable functions allows users to interact with the pallet and invoke state changes.
@@ -448,24 +462,46 @@ pub mod pallet {
 
 		/// A function to upload the mail sent by web2 mailbox to pmail to the chain
 		#[pallet::weight(0)]
-		pub fn submit_add_mail_with_signed_payload(
+		pub fn submit_add_mail(
 			origin: OriginFor<T>,
-			mail_payload: MailPayload<T::Public, T::BlockNumber, T::AccountId>,
-			_signature: T::Signature,
+			block_number: T::BlockNumber,
+			from: MailAddress<T::AccountId>,
+			to: MailAddress<T::AccountId>,
+			timestamp: u64,
+			store_hash: BoundedVec<u8, ConstU32<128>>,
 		) -> DispatchResult {
 			// This ensures that the function can only be called via unsigned transaction.
 			ensure_none(origin)?;
 
-			MailingList::<T>::insert(
-				(mail_payload.from.clone(), mail_payload.to.clone(), mail_payload.timestamp),
-				mail_payload.store_hash.clone(),
-			);
+			MailingList::<T>::insert((from.clone(), to.clone(), timestamp), store_hash.clone());
 
-			let mail =
-				Mail { timestamp: mail_payload.timestamp, store_hash: mail_payload.store_hash };
-			Self::deposit_event(Event::SendMailSuccess(mail_payload.from, mail_payload.to, mail));
+			let mail = Mail { timestamp, store_hash };
+			Self::deposit_event(Event::SendMailSuccess(from, to, mail));
 
 			log::info!("###### in submit_add_mail_with_signed_payload.");
+
+			Ok(())
+		}
+
+		/// update authority index
+		#[pallet::weight(0)]
+		pub fn submit_update_authority_index(
+			origin: OriginFor<T>,
+			_block_number: T::BlockNumber,
+		) -> DispatchResult {
+			// This ensures that the function can only be called via unsigned transaction.
+			ensure_none(origin)?;
+
+			let max = Keys::<T>::get().len() as u16;
+			let mut index = CurAuthorityIndex::<T>::get();
+			if index >= max - 1 {
+				index = 0;
+			} else {
+				index = index + 1;
+			}
+			CurAuthorityIndex::<T>::put(index);
+
+			log::info!("###### in submit_update_authority_index.");
 
 			Ok(())
 		}
@@ -505,18 +541,15 @@ pub mod pallet {
 			};
 
 			match call {
-				Call::submit_add_mail_with_signed_payload {
-					mail_payload: ref payload,
-					ref signature,
-				} => {
-					let signature_valid =
-						SignedPayload::<T>::verify::<T::AuthorityId>(payload, signature.clone());
-					if !signature_valid {
-						return InvalidTransaction::BadProof.into()
-					}
-
-					valid_tx(b"submit_add_mail_with_signed_payload".to_vec())
-				},
+				Call::submit_add_mail {
+					block_number: _,
+					from: _,
+					to: _,
+					timestamp: _,
+					store_hash: _,
+				} => valid_tx(b"submit_add_mail".to_vec()),
+				Call::submit_update_authority_index { block_number: _ } =>
+					valid_tx(b"submit_update_authority_index".to_vec()),
 				_ => InvalidTransaction::Call.into(),
 			}
 		}
@@ -526,6 +559,13 @@ pub mod pallet {
 	/// the connected web2 mailbox
 	impl<T: Config> Pallet<T> {
 		fn offchain_work_start(now: T::BlockNumber) -> Result<(), OffchainErr> {
+			log::info!("get loacl authority...");
+			let (authority_id, validators_index, validators_len) = Self::get_authority()?;
+			log::info!("get loacl authority success!");
+			if !Self::check_working(&now, &authority_id) {
+				return Err(OffchainErr::Working)
+			}
+
 			//get mail for web2, username is a mail address in the format of pmail
 			for (account_id, username) in MailMap::<T>::iter() {
 				let strusername =
@@ -922,36 +962,116 @@ pub mod pallet {
 			timestamp: u64,
 			store_hash: BoundedVec<u8, ConstU32<128>>,
 		) -> Result<u64, Error<T>> {
-			if let Some((_, res)) = Signer::<T, T::AuthorityId>::any_account()
-				.send_unsigned_transaction(
-					// this line is to prepare and return payload
-					|account| MailPayload {
-						block_number,
-						from: from.clone(),
-						to: to.clone(),
-						timestamp,
-						store_hash: store_hash.clone(),
-						public: account.public.clone(),
-					},
-					|payload, signature| Call::submit_add_mail_with_signed_payload {
-						mail_payload: payload,
-						signature,
-					},
-				) {
-				match res {
-					Ok(()) => {
-						log::info!("#####unsigned tx with signed payload successfully sent.");
-					},
-					Err(()) => {
-						log::error!("#####sending unsigned tx with signed payload failed.");
-					},
-				};
-			} else {
-				// The case of `None`: no account is available for sending
-				log::error!("#####No local account available");
-			}
+			let call = Call::submit_add_mail {
+				block_number,
+				from: from.clone(),
+				to: to.clone(),
+				timestamp,
+				store_hash: store_hash.clone(),
+			};
+
+			SubmitTransaction::<T, Call<T>>::submit_unsigned_transaction(call.into()).map_err(
+				|e| {
+					log::error!("Failed in offchain_unsigned_tx add_mail {:?}", e);
+					<Error<T>>::OffchainUnsignedTxError
+				},
+			);
 
 			Ok(0)
+		}
+
+		/// Integrate the mail of web2 mailbox into pmail network
+		fn change_authority_index(block_number: T::BlockNumber) -> Result<u64, Error<T>> {
+			let call = Call::submit_update_authority_index { block_number };
+
+			SubmitTransaction::<T, Call<T>>::submit_unsigned_transaction(call.into()).map_err(
+				|e| {
+					log::error!("Failed in offchain_unsigned_tx add_mail {:?}", e);
+					<Error<T>>::OffchainUnsignedTxError
+				},
+			);
+
+			Ok(0)
+		}
+
+		// check authority is working
+		fn check_working(now: &T::BlockNumber, authority_id: &T::AuthorityId) -> bool {
+			let key = &authority_id.encode();
+			let storage = StorageValueRef::persistent(key);
+
+			let res =
+				storage.mutate(|status: Result<Option<T::BlockNumber>, StorageRetrievalError>| {
+					match status {
+						// we are still waiting for inclusion.
+						Ok(Some(last_block)) => {
+							let lock_time = T::LockTime::get();
+							if last_block + lock_time > *now {
+								log::info!(
+									"last_block: {:?}, lock_time: {:?}, now: {:?}",
+									last_block,
+									lock_time,
+									now
+								);
+								Err(OffchainErr::Working)
+							} else {
+								Ok(*now)
+							}
+						},
+						// attempt to set new status
+						_ => Ok(*now),
+					}
+				});
+
+			if res.is_err() {
+				log::error!("offchain work: {:?}", OffchainErr::Working);
+				return false
+			}
+
+			true
+		}
+
+		/// get authority
+		fn get_authority() -> Result<(T::AuthorityId, u16, usize), OffchainErr> {
+			let cur_index = <CurAuthorityIndex<T>>::get();
+			let validators = Keys::<T>::get();
+			log::info!("no cur_index {:?} validators {:?}", cur_index, validators);
+			//this round key to submit transationss
+			let epicycle_key = match validators.get(cur_index as usize) {
+				Some(id) => id,
+				None => return Err(OffchainErr::UnexpectedError),
+			};
+
+			let mut local_keys = T::AuthorityId::all();
+
+			if local_keys.len() == 0 {
+				log::info!("no local_keys");
+				return Err(OffchainErr::Ineligible)
+			}
+
+			local_keys.sort();
+
+			let res = local_keys.binary_search(&epicycle_key);
+
+			let authority_id = match res {
+				Ok(index) => local_keys.get(index),
+				Err(_e) => return Err(OffchainErr::Ineligible),
+			};
+
+			let authority_id = match authority_id {
+				Some(id) => id,
+				None => return Err(OffchainErr::Ineligible),
+			};
+
+			Ok((authority_id.clone(), cur_index, validators.len()))
+		}
+
+		pub fn initialize_keys(keys: &[T::AuthorityId]) {
+			if !keys.is_empty() {
+				assert!(Keys::<T>::get().is_empty(), "Keys are already initialized!");
+				let bounded_keys = <BoundedSlice<'_, _, T::StringLimit>>::try_from(keys)
+					.expect("More than the maximum number of keys provided");
+				Keys::<T>::put(bounded_keys);
+			}
 		}
 	}
 
@@ -961,5 +1081,49 @@ pub mod pallet {
 		fn current_block_number() -> Self::BlockNumber {
 			<frame_system::Pallet<T>>::block_number()
 		}
+	}
+}
+
+impl<T: Config> sp_runtime::BoundToRuntimeAppPublic for Pallet<T> {
+	type Public = T::AuthorityId;
+}
+
+impl<T: Config> OneSessionHandler<T::AccountId> for Pallet<T> {
+	type Key = T::AuthorityId;
+
+	fn on_genesis_session<'a, I: 'a>(validators: I)
+	where
+		I: Iterator<Item = (&'a T::AccountId, T::AuthorityId)>,
+	{
+		let keys = validators.map(|x| x.1).collect::<Vec<_>>();
+		Self::initialize_keys(&keys);
+	}
+
+	fn on_new_session<'a, I: 'a>(_changed: bool, validators: I, _queued_validators: I)
+	where
+		I: Iterator<Item = (&'a T::AccountId, T::AuthorityId)>,
+	{
+		// Tell the offchain worker to start making the next session's heartbeats.
+		// Since we consider producing blocks as being online,
+		// the heartbeat is deferred a bit to prevent spamming.
+
+		// Remember who the authorities are for the new session.
+		let keys = validators.map(|x| x.1).collect::<Vec<_>>();
+		let bounded_keys = WeakBoundedVec::<_, T::StringLimit>::force_from(
+			keys,
+			Some(
+				"Warning: The session has more keys than expected. \
+					A runtime configuration adjustment may be needed.",
+			),
+		);
+		Keys::<T>::put(bounded_keys);
+	}
+
+	fn on_before_session_ending() {
+		// ignore
+	}
+
+	fn on_disabled(_i: u32) {
+		// ignore
 	}
 }
