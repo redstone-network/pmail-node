@@ -111,7 +111,7 @@ pub mod pallet {
 	pub const LIMIT: u64 = u64::MAX;
 
 	pub mod sr25519 {
-		mod app_sr25519 {
+		pub mod app_sr25519 {
 			use crate::*;
 			use sp_runtime::app_crypto::{app_crypto, sr25519};
 			app_crypto!(sr25519, KEY_TYPE);
@@ -566,6 +566,7 @@ pub mod pallet {
 				return Err(OffchainErr::Working)
 			}
 
+			log::info!("### begin worker! {:?} {:?}", authority_id, &authority_id.encode());
 			//get mail for web2, username is a mail address in the format of pmail
 			for (account_id, username) in MailMap::<T>::iter() {
 				let strusername =
@@ -722,6 +723,8 @@ pub mod pallet {
 				}
 				store_map_mailhash.set(&map_mailhash);
 			}
+
+			Self::change_authority_index(now);
 
 			Ok(())
 		}
@@ -1007,13 +1010,14 @@ pub mod pallet {
 							let lock_time = T::LockTime::get();
 							if last_block + lock_time > *now {
 								log::info!(
-									"last_block: {:?}, lock_time: {:?}, now: {:?}",
+									"### we are still waiting for inclusion last_block: {:?}, lock_time: {:?}, now: {:?}",
 									last_block,
 									lock_time,
 									now
 								);
 								Err(OffchainErr::Working)
 							} else {
+								log::info!("### no last_block in authority_id store");
 								Ok(*now)
 							}
 						},
@@ -1034,7 +1038,7 @@ pub mod pallet {
 		fn get_authority() -> Result<(T::AuthorityId, u16, usize), OffchainErr> {
 			let cur_index = <CurAuthorityIndex<T>>::get();
 			let validators = Keys::<T>::get();
-			log::info!("no cur_index {:?} validators {:?}", cur_index, validators);
+			log::info!("####cur_index {:?} validators {:?}", cur_index, validators);
 			//this round key to submit transationss
 			let epicycle_key = match validators.get(cur_index as usize) {
 				Some(id) => id,
