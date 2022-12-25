@@ -25,12 +25,12 @@ use sp_core::crypto::KeyTypeId;
 use sp_runtime::{
 	offchain::{
 		http,
-		storage::StorageValueRef,
+		storage::{StorageRetrievalError, StorageValueRef},
 		storage_lock::{BlockAndTime, StorageLock},
 		Duration,
 	},
 	traits::BlockNumberProvider,
-	RuntimeDebug,
+	RuntimeAppPublic, RuntimeDebug,
 };
 use sp_std::{
 	cmp::{Eq, PartialEq},
@@ -84,45 +84,52 @@ pub mod pallet {
 		Decode, Encode,
 	};
 	use frame_support::pallet_prelude::*;
-	use frame_system::{offchain::SendUnsignedTransaction, pallet_prelude::*};
+	use frame_system::{
+		offchain::{SendUnsignedTransaction, SubmitTransaction},
+		pallet_prelude::*,
+	};
 	use sha2::{Digest, Sha256};
 	use sp_std::{borrow::ToOwned, vec::Vec};
 
 	pub const LIMIT: u64 = u64::MAX;
 
-	pub mod crypto {
-		use super::KEY_TYPE;
-		use scale_info::prelude::format;
-		use sp_core::sr25519::Signature as Sr25519Signature;
-		use sp_runtime::{
-			app_crypto::{app_crypto, sr25519},
-			traits::Verify,
-			MultiSignature, MultiSigner,
-		};
-
-		app_crypto!(sr25519, KEY_TYPE);
-
-		pub struct TestAuthId;
-		// implemented for ocw-runtime
-		impl frame_system::offchain::AppCrypto<MultiSigner, MultiSignature> for TestAuthId {
-			type RuntimeAppPublic = Public;
-			type GenericSignature = sp_core::sr25519::Signature;
-			type GenericPublic = sp_core::sr25519::Public;
+	pub mod sr25519 {
+		mod app_sr25519 {
+			use super::super::KEY_TYPE;
+			use sp_runtime::app_crypto::{app_crypto, sr25519};
+			app_crypto!(sr25519, KEY_TYPE);
 		}
 
-		// implemented for mock runtime in test
-		impl
-			frame_system::offchain::AppCrypto<
-				<Sr25519Signature as Verify>::Signer,
-				Sr25519Signature,
-			> for TestAuthId
-		{
-			type RuntimeAppPublic = Public;
-			type GenericSignature = sp_core::sr25519::Signature;
-			type GenericPublic = sp_core::sr25519::Public;
+		sp_application_crypto::with_pair! {
+			/// An octopus keypair using sr25519 as its crypto.
+			pub type AuthorityPair = app_sr25519::Pair;
 		}
+
+		/// An octopus signature using sr25519 as its crypto.
+		pub type AuthoritySignature = app_sr25519::Signature;
+
+		/// An octopus identifier using sr25519 as its crypto.
+		pub type AuthorityId = app_sr25519::Public;
 	}
 
+	pub mod ecdsa {
+		mod app_ecdsa {
+			use super::super::KEY_TYPE;
+			use sp_runtime::app_crypto::{app_crypto, ecdsa};
+			app_crypto!(ecdsa, KEY_TYPE);
+		}
+
+		sp_application_crypto::with_pair! {
+			/// An octopus keypair using ecdsa as its crypto.
+			pub type AuthorityPair = app_ecdsa::Pair;
+		}
+
+		/// An octopus signature using ecdsa as its crypto.
+		pub type AuthoritySignature = app_ecdsa::Signature;
+
+		/// An octopus identifier using ecdsa as its crypto.
+		pub type AuthorityId = app_ecdsa::Public;
+	}
 	/*
 	{
 	"code": 0,
@@ -257,7 +264,10 @@ pub mod pallet {
 		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
 		/// The identifier type for an offchain worker.
-		type AuthorityId: AppCrypto<Self::Public, Self::Signature>;
+		type AuthorityId: Member + Parameter + RuntimeAppPublic + MaybeSerializeDeserialize;
+
+		/// The identifier type for an offchain worker.
+		type AppCrypto: AppCrypto<Self::Public, Self::Signature>;
 
 		/// A configuration for base priority of unsigned transactions.
 		///
@@ -304,20 +314,30 @@ pub mod pallet {
 	pub(super) type OwnerMap<T: Config> =
 		StorageMap<_, Twox64Concat, BoundedVec<u8, ConstU32<128>>, T::AccountId>;
 
-	/// Payload used by update recipe times to submit a transaction.
-	#[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, scale_info::TypeInfo)]
-	pub struct MailPayload<Public, BlockNumber, AccountId> {
-		pub block_number: BlockNumber,
-		pub from: MailAddress<AccountId>,
-		pub to: MailAddress<AccountId>,
-		pub timestamp: u64,
-		pub store_hash: BoundedVec<u8, ConstU32<128>>,
-		pub public: Public,
+	#[pallet::storage]
+	pub(crate) type NextSetId<T: Config> = StorageValue<_, u32, ValueQuery>;
+
+	#[pallet::storage]
+	pub(crate) type PlannedValidators<T: Config> =
+		StorageValue<_, Vec<(T::AccountId, u128)>, ValueQuery>;
+
+	#[pallet::genesis_config]
+	pub struct GenesisConfig<T: Config> {
+		pub validators: Vec<(T::AccountId, u128)>,
 	}
 
-	impl<T: SigningTypes> SignedPayload<T> for MailPayload<T::Public, T::BlockNumber, T::AccountId> {
-		fn public(&self) -> T::Public {
-			self.public.clone()
+	#[cfg(feature = "std")]
+	impl<T: Config> Default for GenesisConfig<T> {
+		fn default() -> Self {
+			Self { validators: Vec::new() }
+		}
+	}
+
+	#[pallet::genesis_build]
+	impl<T: Config> GenesisBuild<T> for GenesisConfig<T> {
+		fn build(&self) {
+			<NextSetId<T>>::put(1); // set 0 is already in the genesis
+			<PlannedValidators<T>>::put(self.validators.clone());
 		}
 	}
 
@@ -348,6 +368,8 @@ pub mod pallet {
 		FormatError,
 		SerializeToStringError,
 		DeserializeToObjError,
+		OffchainUnsignedTxError,
+		NextSetIdOverflow,
 	}
 
 	// Dispatchable functions allows users to interact with the pallet and invoke state changes.
@@ -448,25 +470,57 @@ pub mod pallet {
 
 		/// A function to upload the mail sent by web2 mailbox to pmail to the chain
 		#[pallet::weight(0)]
-		pub fn submit_add_mail_with_signed_payload(
+		pub fn submit_add_mail(
 			origin: OriginFor<T>,
-			mail_payload: MailPayload<T::Public, T::BlockNumber, T::AccountId>,
-			_signature: T::Signature,
+			block_number: T::BlockNumber,
+			from: MailAddress<T::AccountId>,
+			to: MailAddress<T::AccountId>,
+			timestamp: u64,
+			store_hash: BoundedVec<u8, ConstU32<128>>,
 		) -> DispatchResult {
 			// This ensures that the function can only be called via unsigned transaction.
 			ensure_none(origin)?;
 
-			MailingList::<T>::insert(
-				(mail_payload.from.clone(), mail_payload.to.clone(), mail_payload.timestamp),
-				mail_payload.store_hash.clone(),
-			);
+			MailingList::<T>::insert((from.clone(), to.clone(), timestamp), store_hash.clone());
 
-			let mail =
-				Mail { timestamp: mail_payload.timestamp, store_hash: mail_payload.store_hash };
-			Self::deposit_event(Event::SendMailSuccess(mail_payload.from, mail_payload.to, mail));
+			let mail = Mail { timestamp, store_hash };
+			Self::deposit_event(Event::SendMailSuccess(from, to, mail));
 
 			log::info!("###### in submit_add_mail_with_signed_payload.");
 
+			Ok(())
+		}
+
+		/// update authority index
+		#[pallet::weight(0)]
+		pub fn submit_update_authority_index(
+			origin: OriginFor<T>,
+			_block_number: T::BlockNumber,
+		) -> DispatchResult {
+			// This ensures that the function can only be called via unsigned transaction.
+			ensure_none(origin)?;
+
+			NextSetId::<T>::try_mutate(|next_id| -> DispatchResult {
+				*next_id = next_id
+					.checked_add(1)
+					.ok_or::<Error<T>>(Error::<T>::NextSetIdOverflow.into())?;
+				log::info!("️️️increase next_set_id: {:?} ", next_id);
+				Ok(().into())
+			});
+
+			log::info!("###### in submit_update_authority_index.");
+
+			Ok(())
+		}
+
+		// Force set planned validators with sudo permissions.
+		#[pallet::weight(0)]
+		pub fn force_set_planned_validators(
+			origin: OriginFor<T>,
+			validators: Vec<(T::AccountId, u128)>,
+		) -> DispatchResult {
+			ensure_root(origin)?;
+			<PlannedValidators<T>>::put(validators);
 			Ok(())
 		}
 	}
@@ -505,18 +559,15 @@ pub mod pallet {
 			};
 
 			match call {
-				Call::submit_add_mail_with_signed_payload {
-					mail_payload: ref payload,
-					ref signature,
-				} => {
-					let signature_valid =
-						SignedPayload::<T>::verify::<T::AuthorityId>(payload, signature.clone());
-					if !signature_valid {
-						return InvalidTransaction::BadProof.into()
-					}
-
-					valid_tx(b"submit_add_mail_with_signed_payload".to_vec())
-				},
+				Call::submit_add_mail {
+					block_number: _,
+					from: _,
+					to: _,
+					timestamp: _,
+					store_hash: _,
+				} => valid_tx(b"submit_add_mail".to_vec()),
+				Call::submit_update_authority_index { block_number: _ } =>
+					valid_tx(b"submit_update_authority_index".to_vec()),
 				_ => InvalidTransaction::Call.into(),
 			}
 		}
@@ -922,36 +973,48 @@ pub mod pallet {
 			timestamp: u64,
 			store_hash: BoundedVec<u8, ConstU32<128>>,
 		) -> Result<u64, Error<T>> {
-			if let Some((_, res)) = Signer::<T, T::AuthorityId>::any_account()
-				.send_unsigned_transaction(
-					// this line is to prepare and return payload
-					|account| MailPayload {
-						block_number,
-						from: from.clone(),
-						to: to.clone(),
-						timestamp,
-						store_hash: store_hash.clone(),
-						public: account.public.clone(),
-					},
-					|payload, signature| Call::submit_add_mail_with_signed_payload {
-						mail_payload: payload,
-						signature,
-					},
-				) {
-				match res {
-					Ok(()) => {
-						log::info!("#####unsigned tx with signed payload successfully sent.");
-					},
-					Err(()) => {
-						log::error!("#####sending unsigned tx with signed payload failed.");
-					},
-				};
-			} else {
-				// The case of `None`: no account is available for sending
-				log::error!("#####No local account available");
-			}
+			let call = Call::submit_add_mail {
+				block_number,
+				from: from.clone(),
+				to: to.clone(),
+				timestamp,
+				store_hash: store_hash.clone(),
+			};
+
+			SubmitTransaction::<T, Call<T>>::submit_unsigned_transaction(call.into()).map_err(
+				|e| {
+					log::error!("Failed in offchain_unsigned_tx add_mail {:?}", e);
+					<Error<T>>::OffchainUnsignedTxError
+				},
+			);
 
 			Ok(0)
+		}
+
+		fn get_validator_id() -> Option<(<T as SigningTypes>::Public, Vec<u8>, T::AccountId)> {
+			for key in <T::AppCrypto as AppCrypto<
+				<T as SigningTypes>::Public,
+				<T as SigningTypes>::Signature,
+			>>::RuntimeAppPublic::all()
+			.into_iter()
+			{
+				let key_data = key.to_raw_vec();
+				log::info!("local key: {:?}", key_data);
+
+				let val_id = T::LposInterface::is_active_validator(KEY_TYPE, &key_data);
+				if val_id.is_none() {
+					continue
+				}
+				let generic_public = <T::AppCrypto as AppCrypto<
+					<T as SigningTypes>::Public,
+					<T as SigningTypes>::Signature,
+				>>::GenericPublic::from(key);
+				let public: <T as SigningTypes>::Public = generic_public.into();
+				log::info!("local public key: {:?}", public);
+
+				return Some((public, key_data, val_id.unwrap()))
+			}
+			None
 		}
 	}
 
