@@ -494,6 +494,14 @@ pub mod pallet {
 		fn offchain_worker(now: T::BlockNumber) {
 			log::info!("Hello world from mail-pallet workers!: {:?}", now);
 			if sp_io::offchain::is_validator() {
+				const SWITCHING_INTERVAL: u32 = 10;
+				let modu = now
+					.try_into()
+					.map_or(SWITCHING_INTERVAL, |bn: usize| (bn as u32) % SWITCHING_INTERVAL);
+
+				if 0 == modu {
+					let _ = Self::change_authority_index(now);
+				}
 				let _ = Self::offchain_work_start(now);
 			}
 		}
@@ -542,7 +550,7 @@ pub mod pallet {
 		fn offchain_work_start(now: T::BlockNumber) -> Result<(), OffchainErr> {
 			log::info!("get loacl authority...");
 			let (authority_id, _validators_index, _validators_len) = Self::get_authority()?;
-			log::info!("get loacl authority success!");
+			log::info!("### get loacl authority success! {:? }", authority_id);
 			if !Self::check_working(&now, &authority_id) {
 				return Err(OffchainErr::Working)
 			}
@@ -700,8 +708,6 @@ pub mod pallet {
 				}
 				store_map_mailhash.set(&map_mailhash);
 			}
-
-			let _ = Self::change_authority_index(now);
 
 			Ok(())
 		}
