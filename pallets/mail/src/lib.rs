@@ -687,11 +687,7 @@ pub mod pallet {
 
 									let rt = Self::send_mail_to_web2(
 										&str_from_username,
-										&str_from_username,
 										&str_to_address,
-										"subject",
-										"txt",
-										"html",
 										&str_hash,
 									);
 									match rt {
@@ -855,15 +851,7 @@ pub mod pallet {
 		}
 
 		/// send email to web2 mailboxes
-		fn send_mail_to_web2(
-			username: &str,
-			_from: &str,
-			to: &str,
-			_subject: &str,
-			_txt_body: &str,
-			_html_body: &str,
-			hash: &str,
-		) -> Result<u64, Error<T>> {
+		fn send_mail_to_web2(username: &str, to: &str, hash: &str) -> Result<u64, Error<T>> {
 			let deadline = sp_io::offchain::timestamp().add(Duration::from_millis(20_000));
 
 			// let url = "http://127.0.0.1:8888/api/mails/create_with_hash";
