@@ -4130,7 +4130,7 @@ dependencies = [
  "pallet-timestamp",
  "pallet-transaction-payment",
  "parity-scale-codec",
- "platforms 2.0.0",
+ "platforms 3.0.2",
  "rand 0.8.5",
  "regex",
  "sc-authority-discovery",
