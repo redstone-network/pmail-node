@@ -1615,7 +1615,7 @@ pub const DAYS: BlockNumber = HOURS * 24;
 
 parameter_types! {
 	pub const UnsignedPriority: BlockNumber = 1;
-	pub const LockTime: BlockNumber = HOURS / 60;
+	pub const LockTime: BlockNumber = MINUTES / 3;
 	#[derive(Clone, PartialEq, Eq)]
 	pub const KeyStringLimit: u32 = 10240;
 }

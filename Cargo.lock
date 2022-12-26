@@ -4126,6 +4126,7 @@ dependencies = [
  "pallet-asset-tx-payment",
  "pallet-balances",
  "pallet-im-online",
+ "pallet-mail",
  "pallet-timestamp",
  "pallet-transaction-payment",
  "parity-scale-codec",
