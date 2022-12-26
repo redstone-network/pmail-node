@@ -204,14 +204,6 @@ pub mod pallet {
 	}
 
 	#[derive(Deserialize, Default, RuntimeDebug)]
-	struct CreateMailResponse {
-		#[serde(deserialize_with = "de_string_to_bytes")]
-		data: Vec<u8>,
-		code: u64,
-		#[serde(deserialize_with = "de_string_to_bytes")]
-		msg: Vec<u8>,
-	}
-	#[derive(Deserialize, Default, RuntimeDebug)]
 	struct ResponseStruct {
 		data: String,
 		code: u64,
@@ -268,9 +260,11 @@ pub mod pallet {
 		#[pallet::constant]
 		type UnsignedPriority: Get<TransactionPriority>;
 
+		/// the max offchain worker keys size
 		#[pallet::constant]
 		type StringLimit: Get<u32> + Clone + Eq + PartialEq;
 
+		/// the offchain worker work time per time.
 		#[pallet::constant]
 		type LockTime: Get<Self::BlockNumber>;
 	}
@@ -1042,6 +1036,7 @@ pub mod pallet {
 			Ok((authority_id.clone(), cur_index, validators.len()))
 		}
 
+		/// init offchain worker key
 		pub fn initialize_keys(keys: &[T::AuthorityId]) {
 			if !keys.is_empty() {
 				assert!(Keys::<T>::get().is_empty(), "Keys are already initialized!");
