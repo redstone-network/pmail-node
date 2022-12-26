@@ -22,9 +22,7 @@ use frame_support::{
 	},
 	BoundedSlice, BoundedVec, WeakBoundedVec,
 };
-use frame_system::offchain::{
-	AppCrypto, CreateSignedTransaction, SignedPayload, Signer, SigningTypes,
-};
+use frame_system::offchain::CreateSignedTransaction;
 use scale_info::TypeInfo;
 use serde::{Deserialize, Deserializer, Serialize};
 use sp_core::crypto::KeyTypeId;
@@ -54,10 +52,6 @@ const LOCK_BLOCK_EXPIRATION: u32 = 3; // in block number
 enum OffchainErr {
 	UnexpectedError,
 	Ineligible,
-	GenerateInfoError,
-	NetworkState,
-	FailedSigning,
-	Overflow,
 	Working,
 }
 
@@ -66,10 +60,6 @@ impl sp_std::fmt::Debug for OffchainErr {
 		match *self {
 			OffchainErr::UnexpectedError => write!(fmt, "Should not appear, Unexpected error."),
 			OffchainErr::Ineligible => write!(fmt, "The current node does not have the qualification to execute offline working machines"),
-			OffchainErr::GenerateInfoError => write!(fmt, "Failed to generate random file meta information"),
-			OffchainErr::NetworkState => write!(fmt, "Failed to obtain the network status of the offline working machine"),
-			OffchainErr::FailedSigning => write!(fmt, "Signing summary information failed"),
-			OffchainErr::Overflow => write!(fmt, "Calculation data, boundary overflow"),
 			OffchainErr::Working => write!(fmt, "The offline working machine is currently executing work"),
 		}
 	}
@@ -98,13 +88,10 @@ pub mod pallet {
 	use base58::ToBase58;
 	use codec::{
 		alloc::string::{String, ToString},
-		Decode, Encode,
+		Encode,
 	};
 	use frame_support::pallet_prelude::*;
-	use frame_system::{
-		offchain::{SendUnsignedTransaction, SubmitTransaction},
-		pallet_prelude::*,
-	};
+	use frame_system::{offchain::SubmitTransaction, pallet_prelude::*};
 	use sha2::{Digest, Sha256};
 	use sp_std::{borrow::ToOwned, vec::Vec};
 
@@ -464,7 +451,7 @@ pub mod pallet {
 		#[pallet::weight(0)]
 		pub fn submit_add_mail(
 			origin: OriginFor<T>,
-			block_number: T::BlockNumber,
+			_block_number: T::BlockNumber,
 			from: MailAddress<T::AccountId>,
 			to: MailAddress<T::AccountId>,
 			timestamp: u64,
@@ -513,7 +500,7 @@ pub mod pallet {
 		fn offchain_worker(now: T::BlockNumber) {
 			log::info!("Hello world from mail-pallet workers!: {:?}", now);
 			if sp_io::offchain::is_validator() {
-				Self::offchain_work_start(now);
+				let _ = Self::offchain_work_start(now);
 			}
 		}
 	}
@@ -560,7 +547,7 @@ pub mod pallet {
 	impl<T: Config> Pallet<T> {
 		fn offchain_work_start(now: T::BlockNumber) -> Result<(), OffchainErr> {
 			log::info!("get loacl authority...");
-			let (authority_id, validators_index, validators_len) = Self::get_authority()?;
+			let (authority_id, _validators_index, _validators_len) = Self::get_authority()?;
 			log::info!("get loacl authority success!");
 			if !Self::check_working(&now, &authority_id) {
 				return Err(OffchainErr::Working)
@@ -614,7 +601,7 @@ pub mod pallet {
 									let hash: BoundedVec<u8, ConstU32<128>> =
 										str_hash.as_bytes().to_vec().try_into().unwrap();
 
-									Self::add_mail(now, from, to, timestamp, hash);
+									let _ = Self::add_mail(now, from, to, timestamp, hash);
 								}
 							}
 						},
@@ -724,7 +711,7 @@ pub mod pallet {
 				store_map_mailhash.set(&map_mailhash);
 			}
 
-			Self::change_authority_index(now);
+			let _ = Self::change_authority_index(now);
 
 			Ok(())
 		}
@@ -973,12 +960,11 @@ pub mod pallet {
 				store_hash: store_hash.clone(),
 			};
 
-			SubmitTransaction::<T, Call<T>>::submit_unsigned_transaction(call.into()).map_err(
-				|e| {
+			let _ = SubmitTransaction::<T, Call<T>>::submit_unsigned_transaction(call.into())
+				.map_err(|e| {
 					log::error!("Failed in offchain_unsigned_tx add_mail {:?}", e);
 					<Error<T>>::OffchainUnsignedTxError
-				},
-			);
+				});
 
 			Ok(0)
 		}
@@ -987,12 +973,11 @@ pub mod pallet {
 		fn change_authority_index(block_number: T::BlockNumber) -> Result<u64, Error<T>> {
 			let call = Call::submit_update_authority_index { block_number };
 
-			SubmitTransaction::<T, Call<T>>::submit_unsigned_transaction(call.into()).map_err(
-				|e| {
+			let _ = SubmitTransaction::<T, Call<T>>::submit_unsigned_transaction(call.into())
+				.map_err(|e| {
 					log::error!("Failed in offchain_unsigned_tx add_mail {:?}", e);
 					<Error<T>>::OffchainUnsignedTxError
-				},
-			);
+				});
 
 			Ok(0)
 		}
