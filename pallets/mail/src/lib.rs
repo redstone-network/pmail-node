@@ -34,7 +34,7 @@ use sp_runtime::{
 		Duration,
 	},
 	traits::BlockNumberProvider,
-	RuntimeAppPublic, RuntimeDebug,
+	RuntimeAppPublic, RuntimeDebug, SaturatedConversion,
 };
 use sp_std::{
 	cmp::{Eq, PartialEq},
@@ -343,6 +343,7 @@ pub mod pallet {
 		SerializeToStringError,
 		DeserializeToObjError,
 		OffchainUnsignedTxError,
+		Overflow,
 	}
 
 	// Dispatchable functions allows users to interact with the pallet and invoke state changes.
@@ -475,10 +476,12 @@ pub mod pallet {
 
 			let max = Keys::<T>::get().len() as u16;
 			let mut index = CurAuthorityIndex::<T>::get();
-			if index >= max - 1 {
+
+			let maxvalue = max.checked_sub(1).ok_or(Error::<T>::Overflow)?.saturated_into();
+			if index >= maxvalue {
 				index = 0;
 			} else {
-				index = index + 1;
+				index = index.checked_add(1).ok_or(Error::<T>::Overflow)?.saturated_into();
 			}
 			CurAuthorityIndex::<T>::put(index);
 
