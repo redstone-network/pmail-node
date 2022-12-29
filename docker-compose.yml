@@ -4,10 +4,12 @@ networks:
     name: redstonenetwork
 
 services:
-  pmail-node:
+ pmail-node:
     container_name: pmail-node
     image: baidang201/pmail-node:latest
     working_dir: /var/www/substrate
+    volumes:
+      - './pmaildata:/data'
     ports:
       - "9944:9944"
     environment:
