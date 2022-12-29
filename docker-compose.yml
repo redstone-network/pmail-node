@@ -12,8 +12,9 @@ services:
       - "9944:9944"
     environment:
       - CARGO_HOME=/var/www/substrate/.cargo
-    command: /usr/local/bin/substrate --dev --rpc-cors all --rpc-methods=unsafe --rpc-external --unsafe-ws-external --unsafe-rpc-external
+    command: /usr/local/bin/substrate --dev --base-path  /data --rpc-cors all --rpc-methods=unsafe --rpc-external --unsafe-ws-external --unsafe-rpc-external   --pruning archive
     restart: always
+
     networks:
       redstonenetwork:
         aliases: 
