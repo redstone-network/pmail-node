@@ -77,7 +77,7 @@ fn it_works_for_send_mail() {
 
 		assert_ok!(MailModule::send_mail(
 			RuntimeOrigin::signed(signer),
-			to.clone(),
+			vec![to.clone()],
 			timestamp,
 			hash.clone()
 		));
@@ -130,7 +130,7 @@ fn send_mail_will_fail_when_address_not_bind() {
 		assert_noop!(
 			MailModule::send_mail(
 				RuntimeOrigin::signed(signer),
-				to.clone(),
+				vec![to.clone()],
 				timestamp,
 				hash.clone()
 			),
@@ -157,7 +157,7 @@ fn send_mail_will_fail_when_send_duplicate() {
 
 		assert_ok!(MailModule::send_mail(
 			RuntimeOrigin::signed(signer),
-			to.clone(),
+			vec![to.clone()],
 			timestamp,
 			hash.clone()
 		));
@@ -179,7 +179,7 @@ fn send_mail_will_fail_when_send_duplicate() {
 		assert_noop!(
 			MailModule::send_mail(
 				RuntimeOrigin::signed(signer),
-				to.clone(),
+				vec![to.clone()],
 				timestamp,
 				hash.clone()
 			),

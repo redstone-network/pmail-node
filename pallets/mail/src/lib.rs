@@ -419,7 +419,7 @@ pub mod pallet {
 		#[pallet::weight(10_000)]
 		pub fn send_mail(
 			origin: OriginFor<T>,
-			to: MailAddress<T::AccountId>,
+			tos: Vec<MailAddress<T::AccountId>>,
 			timestamp: u64,
 			store_hash: BoundedVec<u8, ConstU32<128>>,
 		) -> DispatchResult {
@@ -428,19 +428,23 @@ pub mod pallet {
 			ensure!(MailMap::<T>::contains_key(&who), Error::<T>::AddressMustBeExist);
 			let from = MailAddress::SubAddr(who.clone());
 
-			ensure!(
-				!MailingList::<T>::contains_key((from.clone(), to.clone(), timestamp)),
-				Error::<T>::MailSendDuplicate
-			);
+			for to in tos.iter() {
+				ensure!(
+					!MailingList::<T>::contains_key((from.clone(), to.clone(), timestamp)),
+					Error::<T>::MailSendDuplicate
+				);
+			}
 
-			// add mail to mailing list
-			MailingList::<T>::insert((from.clone(), to.clone(), timestamp), store_hash.clone());
+			for to in tos.iter() {
+				// add mail to mailing list
+				MailingList::<T>::insert((from.clone(), to.clone(), timestamp), store_hash.clone());
 
-			let mail = Mail { timestamp, store_hash };
+				let mail = Mail { timestamp, store_hash: store_hash.clone() };
 
-			log::info!("------- mail send success");
+				log::info!("------- mail send success");
 
-			Self::deposit_event(Event::SendMailSuccess(from.clone(), to.clone(), mail));
+				Self::deposit_event(Event::SendMailSuccess(from.clone(), to.clone(), mail));
+			}
 
 			Ok(())
 		}
