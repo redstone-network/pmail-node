@@ -12,6 +12,7 @@ services:
       - './data-a:/data'
     image: baidang201/pmail-node:latest
     command:
+      - "/usr/local/bin/substrate"
       - "--node-key"
       - "0000000000000000000000000000000000000000000000000000000000000001"
       - "--base-path"
@@ -47,6 +48,7 @@ services:
     volumes:
       - './data-b:/data'
     command:
+      - "/usr/local/bin/substrate"
       - "--node-key"
       - "0000000000000000000000000000000000000000000000000000000000000002"
       - "--base-path"
