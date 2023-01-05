@@ -90,7 +90,7 @@ services:
       - "--chain=local"
       - "--port"
       - "30333"
-      - "--light"
+      #- "--light"
       - "--bootnodes"
       - "/dns/validator-a/tcp/30333/p2p/12D3KooWEyoppNCUx8Yx66oV9fJnriXwCcXwDDUA2kj6vnc6iDEp"
       - "--bootnodes"
