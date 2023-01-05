@@ -104,7 +104,8 @@ services:
       #- "--log"
       #- "sub-libp2p=trace"
       #- "--prometheus-external"
-      - "--pruning archive"
+      - "--state-pruning"
+      - "archive"
 
     restart: always
     networks:
