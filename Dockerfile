@@ -21,7 +21,7 @@ LABEL description="Multistage Docker image for Substrate: a platform for web3" \
 
 COPY --from=builder /substrate/target/release/substrate /usr/local/bin
 
-RUN useradd -m -u 1000 -U -s /bin/sh -d /substrate substrate && \
+RUN useradd -m -u 2000 -U -s /bin/sh -d /substrate substrate && \
 	mkdir -p /data /substrate/.local/share/substrate && \
 	chown -R substrate:substrate /data && \
 	ln -s /data /substrate/.local/share/substrate && \
