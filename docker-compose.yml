@@ -81,8 +81,6 @@ services:
       - "9944:9944"
     volumes:
       - './data-c:/data'
-    networks:
-      - internet
     command:
       - "/usr/local/bin/substrate"
       - "--node-key"
@@ -107,3 +105,9 @@ services:
       #- "sub-libp2p=trace"
       #- "--prometheus-external"
       - "--pruning archive"
+
+    restart: always
+    networks:
+      redstonenetwork:
+        aliases: 
+          - redstonenetwork
